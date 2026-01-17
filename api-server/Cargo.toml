@@ -29,5 +29,6 @@ metrics-exporter-prometheus.workspace = true
 
 
 # Axum for API server
-axum = { version = "0.7", features = ["macros"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+axum = { version = "0.8.8", features = ["macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
