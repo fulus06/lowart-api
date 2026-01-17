@@ -40,4 +40,9 @@ futures = "0.3"
 # UUID
 uuid = { version = "1.8", features = ["v4", "serde"] }
 
+# 加密
+aes-gcm = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
+
 

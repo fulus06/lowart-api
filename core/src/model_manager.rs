@@ -33,7 +33,14 @@ impl ModelManager {
         let request_script = config.request_script.clone();
         let response_script = config.response_script.clone();
 
+        // 尝试解密 API Key (如果解密失败则视为原样返回，支持老数据)
+        let decrypted_key = match utils::Crypto::decrypt(&config.api_key) {
+            Ok(key) => key,
+            Err(_) => config.api_key.clone(),
+        };
+
         // 2. 查缓存或实例化适配器
+
         let adapter = {
             let cache = self.cache.read().await;
             if let Some(model) = cache.get(model_id) {
@@ -51,12 +58,12 @@ impl ModelManager {
         let model: Arc<dyn AiModel> = match config.vendor_type.as_str() {
             "OpenAI" => Arc::new(OpenAiAdapter::new(
                 config.model_id.clone(),
-                config.api_key.clone(),
+                decrypted_key.clone(),
                 config.base_url.clone(),
             )),
             "Anthropic" => Arc::new(AnthropicAdapter::new(
                 config.model_id.clone(),
-                config.api_key.clone(),
+                decrypted_key.clone(),
                 config.base_url.clone(),
             )),
             "ComfyUI" => Arc::new(ComfyUiAdapter::new(
