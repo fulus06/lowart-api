@@ -9,8 +9,7 @@ pub struct DbConnection {
 }
 
 impl DbConnection {
-    /// 初始化数据库连接
-    /// 尝试从环境变量 `DATABASE_URL` 获取连接字符串，默认为 `sqlite:lowart.db`
+    /// 初始化数据库连接并执行迁移
     pub async fn new() -> Result<Self> {
         let database_url = env::var("DATABASE_URL")
             .unwrap_or_else(|_| "sqlite:lowart.db?mode=rwc".to_string());
@@ -20,10 +19,15 @@ impl DbConnection {
             .connect(&database_url)
             .await?;
 
-        // 执行初始化脚本
-        let schema = include_str!("../schema.sql");
-        sqlx::query(schema).execute(&pool).await?;
+        // 执行数据库迁移
+        tracing::info!("正在执行数据库迁移...");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await?;
+        tracing::info!("数据库迁移完成");
 
         Ok(Self { pool })
     }
 }
+
+
