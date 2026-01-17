@@ -61,4 +61,20 @@ impl McpManager {
             
         client.call_tool(tool_name, arguments).await
     }
+
+    /// 全局查找并调用工具 (按名称)
+    pub async fn call_tool_any(&self, tool_name: &str, arguments: serde_json::Value) -> Result<serde_json::Value> {
+        let clients = self.clients.read().await;
+        for (name, client) in clients.iter() {
+            // 首先检查该客户端是否有此工具
+            if let Ok(tools) = client.list_tools().await {
+                if tools.iter().any(|t| t.name == tool_name) {
+                    tracing::debug!("命中工具 {} -> 客户端 {}", tool_name, name);
+                    return client.call_tool(tool_name, arguments).await;
+                }
+            }
+        }
+        Err(anyhow!("全局未找到工具: {}", tool_name))
+    }
 }
+

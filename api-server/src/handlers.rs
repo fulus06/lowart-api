@@ -177,71 +177,143 @@ pub async fn chat_completions(
             Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
-        match model.chat_completions(final_payload.clone()).await {
-            Ok(res) => {
-                // 4. 执行响应转换 (如果配置了脚本)
-                let mut final_res_val = res.clone();
-                if let Some(script) = res_script {
-                    match rhai_engine.transform(&script, final_res_val) {
-                        Ok(new_res) => final_res_val = new_res,
-                        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("响应转换失败: {}", e)).into_response(),
-                    }
-                }
+        // --- 非流式请求 工具调用治理循环 ---
+        let mut current_payload = final_payload.clone();
+        let mut total_req_tokens = 0;
+        let mut total_res_tokens = 0;
+        let max_iterations = 5; // 防止死循环
 
-                // 5. 计费逻辑 (非流式)
-                let db = state.model_manager.db();
-                let model_id_str = model_id.to_string();
-                let payload_clone = final_payload.clone();
-                let res_json = res.clone(); // 这里是原始响应用于计算 token
-                
-                tokio::spawn(async move {
+        for _ in 0..max_iterations {
+            match model.chat_completions(current_payload.clone()).await {
+                Ok(res) => {
+                    // 记录 Token
                     use core::TokenCounter;
-                    // 计算请求 Token (简单处理消息列表)
-                    let req_tokens = if let Some(msgs) = payload_clone.get("messages") {
-                        TokenCounter::count_messages_tokens(msgs)
-                    } else {
-                        0
-                    };
-                    
-                    // 计算响应 Token
-                    let res_tokens = if let Some(choices) = res_json.get("choices").and_then(|v| v.as_array()) {
-                       if let Some(content) = choices.get(0).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|t| t.as_str()) {
-                           TokenCounter::count_tokens(content)
-                       } else {
-                           0
-                       }
-                    } else {
-                        0
-                    };
-
-                    let total = req_tokens + res_tokens;
-                    if total > 0 {
-                        let user_repo = db::UserRepo::new(&db);
-                        let _ = user_repo.increment_token_usage(&user.id, total as i64).await;
+                    if let Some(msgs) = current_payload.get("messages") {
+                        total_req_tokens += TokenCounter::count_messages_tokens(msgs);
                     }
 
-                    // 记录详细统计
-                    let stats_repo = db::StatsRepo::new(&db);
-                    let _ = stats_repo.record(db::UsageStat {
-                        id: 0,
-                        user_id: user.id,
-                        model_id: model_id_str,
-                        request_tokens: req_tokens as i64,
-                        response_tokens: res_tokens as i64,
-                        request_count: 1,
-                        response_count: 1,
-                        duration_ms: 0, // 这里的时长可以后续优化
-                        timestamp: chrono::Utc::now(),
-                    }).await;
-                });
+                    // 检查响应中的 tool_calls
+                    let choice = res.get("choices").and_then(|c| c.as_array()).and_then(|a| a.get(0));
+                    let message = choice.and_then(|c| c.get("message"));
+                    let tool_calls = message.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array());
 
-                let mut response = Json(final_res_val).into_response();
-                response.extensions_mut().insert(ModelId(model_id.to_string()));
-                response
-            },
-            Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                    if let Some(calls) = tool_calls {
+                        if !calls.is_empty() {
+                            let db_conn = state.model_manager.db();
+                            let policy_repo = db::ToolPolicyRepo::new(&db_conn.pool);
+                            
+                            let mut tool_results = Vec::new();
+                            let mut requires_confirm = Vec::new();
+
+                            for call in calls {
+                                let call_id = call["id"].as_str().unwrap_or_default();
+                                let tool_name = call["function"]["name"].as_str().unwrap_or_default();
+                                let arguments = call["function"]["arguments"].clone();
+                                
+                                // 检查治理策略
+                                let policy = policy_repo.get_policy(tool_name, Some(&user.id)).await.unwrap_or_else(|_| "auto".to_string());
+                                
+                                match policy.as_str() {
+                                    "block" => {
+                                        tool_results.push(json!({
+                                            "role": "tool",
+                                            "tool_call_id": call_id,
+                                            "name": tool_name,
+                                            "content": "执行失败: 该工具已被审计策略禁用"
+                                        }));
+                                    },
+                                    "confirm" => {
+                                        requires_confirm.push(call.clone());
+                                    },
+                                    _ => {
+                                        // "auto" or default: 执行工具
+                                        let result = match state.mcp_manager.call_tool_any(tool_name, arguments).await {
+                                            Ok(out) => out.to_string(),
+                                            Err(e) => format!("工具调用失败: {}", e),
+                                        };
+                                        tool_results.push(json!({
+                                            "role": "tool",
+                                            "tool_call_id": call_id,
+                                            "name": tool_name,
+                                            "content": result
+                                        }));
+                                    }
+                                }
+                            }
+
+
+                            // 如果有需要确认的工具，中断循环，返回确认结构
+                            if !requires_confirm.is_empty() {
+                                return Json(json!({
+                                    "status": "require_confirmation",
+                                    "user_id": user.id,
+                                    "model_id": model_id,
+                                    "tool_calls": requires_confirm,
+                                    "partial_response": res
+                                })).into_response();
+                            }
+
+                            // 组织消息并继续对话
+                            let mut messages = current_payload["messages"].as_array().unwrap().clone();
+                            messages.push(message.unwrap().clone());
+                            messages.extend(tool_results);
+                            current_payload["messages"] = json!(messages);
+                            
+                            // 继续下一次循环 call_model
+                            continue;
+                        }
+                    }
+
+                    // 没有 tool_calls，结束循环
+                    // 最终计费
+                    if let Some(choices) = res.get("choices").and_then(|v| v.as_array()) {
+                        if let Some(content) = choices.get(0).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|t| t.as_str()) {
+                            total_res_tokens += TokenCounter::count_tokens(content);
+                        }
+                    }
+
+                    let db_conn = state.model_manager.db();
+                    let u_id = user.id.clone();
+                    let m_id = model_id.to_string();
+                    tokio::spawn(async move {
+                        let total = total_req_tokens + total_res_tokens;
+                        let user_repo = db::UserRepo::new(&db_conn);
+                        let _ = user_repo.increment_token_usage(&u_id, total as i64).await;
+
+                        let stats_repo = db::StatsRepo::new(&db_conn);
+                        let _ = stats_repo.record(db::UsageStat {
+                            id: 0,
+                            user_id: u_id,
+                            model_id: m_id,
+                            request_tokens: total_req_tokens as i64,
+                            response_tokens: total_res_tokens as i64,
+                            request_count: 1,
+                            response_count: 1,
+                            duration_ms: 0,
+                            timestamp: chrono::Utc::now(),
+                        }).await;
+                    });
+
+                    // 执行最终响应转换
+                    let mut final_res_val = res.clone();
+                    if let Some(script) = res_script {
+                        match rhai_engine.transform(&script, final_res_val) {
+                            Ok(new_res) => final_res_val = new_res,
+                            Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("响应转换失败: {}", e)).into_response(),
+                        }
+                    }
+
+                    let mut response = Json(final_res_val).into_response();
+                    response.extensions_mut().insert(ModelId(model_id.to_string()));
+                    return response;
+                },
+                Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
         }
+
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "达到最大工具调用次数").into_response()
     }
+
 }
 
 
