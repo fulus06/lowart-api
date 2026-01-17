@@ -26,9 +26,10 @@ async fn main() -> anyhow::Result<()> {
     // 3. 初始化核心组件
     let model_manager = Arc::new(core::ModelManager::new(Arc::clone(&db)));
     let rhai_engine = Arc::new(core::RhaiEngine::new());
-    let mcp_manager = Arc::new(core::McpManager::new());
     let agent_orchestrator = Arc::new(core::AgentOrchestrator::new());
+    let mcp_manager = Arc::new(core::McpManager::new(Arc::clone(&agent_orchestrator)));
     let rate_limit_cache = Arc::new(dashmap::DashMap::new());
+
     
     let state = router::AppState {
         model_manager,

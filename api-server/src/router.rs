@@ -41,8 +41,11 @@ pub fn create_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/chat/completions", post(handlers::chat_completions))
         .route("/tools/confirm", post(handlers::confirm_tool_call))
+        .route("/jobs", get(handlers::list_jobs))
+        .route("/jobs/:id", get(handlers::get_job))
         .layer(middleware::from_fn_with_state(state.clone(), limit_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), stats_middleware));
+
 
 
     Router::new()

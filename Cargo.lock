@@ -371,6 +371,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "db",
  "models",
  "protocols",
@@ -382,6 +383,7 @@ dependencies = [
  "tokio",
  "tracing",
  "utils",
+ "uuid",
 ]
 
 [[package]]
@@ -1352,6 +1354,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "utils",
 ]
 

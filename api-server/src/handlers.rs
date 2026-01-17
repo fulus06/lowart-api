@@ -2,7 +2,8 @@ use axum::{Json, response::IntoResponse, extract::State, Extension};
 use axum::response::sse::{Event, Sse};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use db::SessionRepo;
+use db::{SessionRepo, JobRepo, AsyncJob};
+use utils::{Result, Error};
 use std::sync::Arc;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -22,7 +23,7 @@ struct TokenAccountingStream<S> {
 
 impl<S> Stream for TokenAccountingStream<S> 
 where 
-    S: Stream<Item = utils::Result<Value>> + Unpin 
+    S: Stream<Item = Result<Value>> + Unpin 
 {
     type Item = std::result::Result<Event, std::convert::Infallible>;
 
@@ -88,6 +89,65 @@ pub async fn chat_completions(
     };
 
     let stream_mode = payload_val.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let async_mode = payload_val.get("async").and_then(|a| a.as_bool()).unwrap_or(false);
+
+    // --- 处理异步任务模式 ---
+    if async_mode {
+        let job_id = uuid::Uuid::new_v4().to_string();
+        let db_conn = state.model_manager.db();
+        let job_repo = JobRepo::new(&db_conn.pool);
+        
+        let job = AsyncJob {
+            job_id: job_id.clone(),
+            user_id: user.id.clone(),
+            status: "pending".to_string(),
+            payload: Some(payload_val.to_string()),
+            result: None,
+            error: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        if let Err(e) = job_repo.create_job(&job).await {
+            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+
+        // 后端执行
+        let user_id = user.id.clone();
+        let model_id_str = model_id.to_string();
+        let db_clone = Arc::clone(&db_conn);
+        let model_clone = Arc::clone(&model);
+        let payload_clone = payload_val.clone();
+        let job_id_clone = job_id.clone();
+
+        tokio::spawn(async move {
+            let job_repo = JobRepo::new(&db_clone.pool);
+            let _ = job_repo.update_status(&job_id_clone, "running", None, None).await;
+
+            match model_clone.chat_completions(payload_clone).await {
+                Ok(res) => {
+                    let res_str = res.to_string();
+                    let _ = job_repo.update_status(&job_id_clone, "completed", Some(&res_str), None).await;
+                    
+                    // Token 统计
+                    use core::TokenCounter;
+                    let req_tokens = TokenCounter::count_messages_tokens(payload_val.get("messages").unwrap_or(&json!([])));
+                    let res_tokens = TokenCounter::count_tokens(res.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|c| c.as_str()).unwrap_or_default());
+                    
+                    let _ = db::UserRepo::new(&db_clone).increment_token_usage(&user_id, (req_tokens + res_tokens) as i64).await;
+                    let _ = db::StatsRepo::new(&db_clone).record_usage(&user_id, &model_id_str, req_tokens as i64, res_tokens as i64).await;
+                }
+                Err(e) => {
+                    let _ = job_repo.update_status(&job_id_clone, "failed", None, Some(&e.to_string())).await;
+                }
+            }
+        });
+
+        return Json(json!({
+            "status": "async_started",
+            "job_id": job_id
+        })).into_response();
+    }
 
     if stream_mode {
         match model.chat_completions_stream(payload_val.clone()).await {
@@ -242,12 +302,6 @@ pub async fn chat_completions(
     }
 }
 
-#[derive(Deserialize)]
-pub struct ToolConfirmRequest {
-    pub session_id: String,
-    pub approved_ids: Vec<String>,
-}
-
 pub async fn confirm_tool_call(
     State(state): State<crate::router::AppState>,
     Extension(user): Extension<db::User>,
@@ -307,6 +361,45 @@ pub async fn confirm_tool_call(
         "status": "success",
         "next_payload": current_payload
     }))).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ToolConfirmRequest {
+    pub session_id: String,
+    pub approved_ids: Vec<String>,
+}
+
+pub async fn get_job(
+    State(state): State<crate::router::AppState>,
+    Extension(user): Extension<db::User>,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let db_conn = state.model_manager.db();
+    let job_repo = JobRepo::new(&db_conn.pool);
+
+    match job_repo.find_by_id(&job_id).await {
+        Ok(Some(job)) => {
+            if job.user_id != user.id {
+                return (axum::http::StatusCode::FORBIDDEN, "Forbidden").into_response();
+            }
+            Json(job).into_response()
+        }
+        Ok(None) => (axum::http::StatusCode::NOT_FOUND, "Job not found").into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+pub async fn list_jobs(
+    State(state): State<crate::router::AppState>,
+    Extension(user): Extension<db::User>,
+) -> impl IntoResponse {
+    let db_conn = state.model_manager.db();
+    let job_repo = JobRepo::new(&db_conn.pool);
+
+    match job_repo.list_by_user(&user.id).await {
+        Ok(jobs) => Json(jobs).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 pub async fn health_check() -> impl IntoResponse {
