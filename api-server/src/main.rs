@@ -38,8 +38,10 @@ async fn main() -> anyhow::Result<()> {
     let agent_orchestrator = Arc::new(lowart_core::AgentOrchestrator::new());
     let mcp_manager = Arc::new(lowart_core::McpManager::new(Arc::clone(&agent_orchestrator)));
     let rate_limit_cache = Arc::new(dashmap::DashMap::new());
-
-
+    let user_cache = moka::future::Cache::builder()
+        .max_capacity(1000)
+        .time_to_live(std::time::Duration::from_secs(600)) // 10分钟过期
+        .build();
     
     let state = router::AppState {
         model_manager,
@@ -47,7 +49,9 @@ async fn main() -> anyhow::Result<()> {
         mcp_manager,
         agent_orchestrator,
         rate_limit_cache,
+        user_cache,
     };
+
 
 
     // 5. 构建路由

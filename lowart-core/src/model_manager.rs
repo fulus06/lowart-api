@@ -1,31 +1,47 @@
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use db::{DbConnection, ConfigRepo};
+use moka::future::Cache;
+use std::time::Duration;
 
 use models::{AiModel, OpenAiAdapter, AnthropicAdapter, ComfyUiAdapter};
 use utils::{Result, anyhow};
 
+/// 模型管理器缓存项
+#[derive(Clone)]
+struct ModelCacheItem {
+    adapter: Arc<dyn AiModel>,
+    request_script: Option<String>,
+    response_script: Option<String>,
+}
+
 /// 模型管理器
-/// 实现原理: 负责维护模型适配器的生命周期和缓存。它根据 model_id 从数据库查询配置，
-/// 并动态实例化对应的具体适配器。使用 Arc<RwLock<...>> 确保多线程安全访问。
+/// 实现原理: 负责维护模型适配器的生命周期和缓存。
+/// 使用 moka 高性能缓存，支持过期自动清理，减少数据库压力和解密运算。
 pub struct ModelManager {
     db: Arc<DbConnection>,
-    // 缓存已实例化的模型，避免重复解析配置和创建客户端
-    cache: RwLock<HashMap<String, Arc<dyn AiModel>>>,
+    // 聚合缓存: model_id -> (适配器, 转换脚本)
+    cache: Cache<String, ModelCacheItem>,
 }
 
 impl ModelManager {
     pub fn new(db: Arc<DbConnection>) -> Self {
         Self {
             db,
-            cache: RwLock::new(HashMap::new()),
+            cache: Cache::builder()
+                .max_capacity(100)
+                .time_to_live(Duration::from_secs(3600)) // 1小时过期
+                .build(),
         }
     }
 
     /// 获取模型适配器及其转换脚本
     pub async fn get_model_with_scripts(&self, model_id: &str) -> Result<(Arc<dyn AiModel>, Option<String>, Option<String>)> {
-        // 1. 先查数据库获取完整配置 (包含脚本)
+        // 1. 尝试从缓存获取
+        if let Some(item) = self.cache.get(model_id).await {
+            return Ok((item.adapter, item.request_script, item.response_script));
+        }
+
+        // 2. 缓存未命中，查数据库获取完整配置
         let repo = ConfigRepo::new(&self.db);
         let config = repo.find_by_model_id(model_id).await?
             .ok_or_else(|| anyhow!("模型配置未找到: {}", model_id))?;
@@ -33,29 +49,13 @@ impl ModelManager {
         let request_script = config.request_script.clone();
         let response_script = config.response_script.clone();
 
-        // 尝试解密 API Key (如果解密失败则视为原样返回，支持老数据)
+        // 3. 实例化适配器并解密 Key
         let decrypted_key = match utils::Crypto::decrypt(&config.api_key) {
             Ok(key) => key,
             Err(_) => config.api_key.clone(),
         };
 
-        // 2. 查缓存或实例化适配器
-
-        let adapter = {
-            let cache = self.cache.read().await;
-            if let Some(model) = cache.get(model_id) {
-                Some(Arc::clone(model))
-            } else {
-                None
-            }
-        };
-
-        if let Some(adapter) = adapter {
-            return Ok((adapter, request_script, response_script));
-        }
-
-        // 3. 实例化适配器
-        let model: Arc<dyn AiModel> = match config.vendor_type.as_str() {
+        let adapter: Arc<dyn AiModel> = match config.vendor_type.as_str() {
             "OpenAI" => Arc::new(OpenAiAdapter::new(
                 config.model_id.clone(),
                 decrypted_key.clone(),
@@ -74,10 +74,14 @@ impl ModelManager {
         };
 
         // 4. 写入缓存并返回
-        let mut cache = self.cache.write().await;
-        cache.insert(model_id.to_string(), Arc::clone(&model));
+        let item = ModelCacheItem {
+            adapter: Arc::clone(&adapter),
+            request_script: request_script.clone(),
+            response_script: response_script.clone(),
+        };
+        self.cache.insert(model_id.to_string(), item).await;
         
-        Ok((model, request_script, response_script))
+        Ok((adapter, request_script, response_script))
     }
 
     /// 获取模型适配器 (向下兼容)
@@ -86,16 +90,13 @@ impl ModelManager {
         Ok(adapter)
     }
 
-
     pub fn db(&self) -> Arc<DbConnection> {
         Arc::clone(&self.db)
     }
 
     /// 清除缓存 (用于配置热更新场景)
-
     pub async fn clear_cache(&self) {
-        let mut cache = self.cache.write().await;
-        cache.clear();
-        tracing::info!("模型缓存已清除");
+        self.cache.invalidate_all();
+        tracing::info!("模型管理器缓存已清除");
     }
 }

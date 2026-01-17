@@ -1,5 +1,5 @@
-use crate::user::{UserInfo, UserStatus};
 use db::{DbConnection, UserRepo};
+
 use utils::{Result, anyhow};
 
 use std::sync::Arc;
@@ -16,8 +16,8 @@ impl AuthManager {
     }
 
 
-    /// 校验 API Key 并返回用户信息
-    pub async fn authenticate(&self, api_key: &str) -> Result<UserInfo> {
+    /// 校验 API Key 并返回完整用户信息
+    pub async fn authenticate(&self, api_key: &str) -> Result<db::User> {
         let repo = UserRepo::new(&self.db);
         let user = repo.find_by_api_key(api_key).await?
             .ok_or_else(|| anyhow!("无效的 API Key"))?;
@@ -26,11 +26,8 @@ impl AuthManager {
             return Err(anyhow!("用户状态异常: {}", user.status));
         }
 
-        Ok(UserInfo {
-            id: user.id,
-            username: user.username,
-            status: UserStatus::from_str(&user.status),
-        })
+        Ok(user)
     }
+
 }
 

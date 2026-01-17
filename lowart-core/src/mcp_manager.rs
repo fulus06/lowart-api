@@ -29,6 +29,14 @@ impl McpManager {
         clients.insert(name, client);
     }
 
+    /// 注销一个已有的 MCP 客户端
+    pub async fn unregister_client(&self, name: &str) {
+        let mut clients = self.clients.write().await;
+        clients.remove(name);
+        tracing::info!("MCP 客户端 {} 已下线", name);
+    }
+
+
     /// 聚合所有客户端的可用的工具 (包含内置系统工具)
     pub async fn list_all_tools(&self) -> Result<Vec<McpTool>> {
         let clients = self.clients.read().await;

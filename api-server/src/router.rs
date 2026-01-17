@@ -24,7 +24,9 @@ pub struct AppState {
     pub mcp_manager: Arc<lowart_core::McpManager>,
     pub agent_orchestrator: Arc<lowart_core::AgentOrchestrator>,
     pub rate_limit_cache: Arc<dashmap::DashMap<(String, i64), i64>>, // (user_id, minute_timestamp) -> count
+    pub user_cache: moka::future::Cache<String, db::User>, // api_key -> user
 }
+
 
 
 
@@ -41,7 +43,10 @@ pub fn create_router(state: AppState, metrics_handle: PrometheusHandle) -> Route
         .route("/users", get(admin_handlers::list_users))
         .route("/users/quota", post(admin_handlers::update_user_quota))
         .route("/policies", post(admin_handlers::update_tool_policy))
+        .route("/mcp/register", post(admin_handlers::register_mcp))
+        .route("/mcp/unregister", post(admin_handlers::unregister_mcp))
         .layer(middleware::from_fn(admin_middleware));
+
 
     // 标准 API 接口 (需 Auth)
     let api_routes = Router::new()

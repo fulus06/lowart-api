@@ -9,6 +9,8 @@ utils = { path = "../utils" }
 auth = { path = "../auth" }
 db = { path = "../db" }
 models = { path = "../models" }
+protocols = { path = "../protocols" }
+
 tokio.workspace = true
 dashmap.workspace = true
 serde.workspace = true
@@ -25,6 +27,7 @@ hyper.workspace = true
 uuid.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+moka.workspace = true
 
 
 

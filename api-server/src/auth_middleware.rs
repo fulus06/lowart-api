@@ -22,18 +22,29 @@ pub async fn auth_middleware(
 
     match auth_header {
         Some(api_key) => {
-            let manager = AuthManager::new(state.model_manager.db()); // 假设 ModelManager 暴露了 db()
+            // 1. 尝试从缓存获取
+            if let Some(user) = state.user_cache.get(api_key).await {
+                let mut req = req;
+                req.extensions_mut().insert(user);
+                return Ok(next.run(req).await);
+            }
+
+            // 2. 缓存未命中，执行数据库校验
+            let manager = AuthManager::new(state.model_manager.db());
             match manager.authenticate(api_key).await {
                 Ok(user) => {
+                    // 写入缓存
+                    state.user_cache.insert(api_key.to_string(), user.clone()).await;
+                    
                     let mut req = req;
                     req.extensions_mut().insert(user);
                     Ok(next.run(req).await)
                 }
                 Err(_) => Err(StatusCode::UNAUTHORIZED),
             }
-
         }
         None => Err(StatusCode::UNAUTHORIZED),
     }
+
 }
 
