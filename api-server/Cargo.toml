@@ -19,6 +19,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
 futures.workspace = true
+hyper-util.workspace = true
+tower.workspace = true
+hyper.workspace = true
+
+
 
 # Axum for API server
 axum = { version = "0.7", features = ["macros"] }

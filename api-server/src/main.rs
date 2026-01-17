@@ -44,22 +44,61 @@ async fn main() -> anyhow::Result<()> {
 
 
 
-    // 4. 选择启动模式 (根据环境变量或配置)
-    let listen_mode = std::env::var("LISTEN_MODE").unwrap_or_else(|_| "HTTP".to_string());
+    // 4. 选择启动模式
+    let uds_path = std::env::var("UDS_PATH").ok();
 
-    if listen_mode == "UDS" {
-        let path = "/tmp/lowart.sock";
-        let _ = std::fs::remove_file(path);
-        let _listener = UnixListener::bind(path)?;
+    if let Some(path) = uds_path {
+        // UDS 模式
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path)?;
         tracing::info!("正在监听 UDS: {}", path);
-        // Axum 0.7 及其更高版本对 UDS 的支持需要额外的适配器或低级 Serve 调用
-        // 此处仅展示逻辑脉络
+
+        use hyper_util::server::conn::auto::Builder;
+        use hyper_util::rt::TokioExecutor;
+        use tower::Service;
+
+        loop {
+            let (stream, _addr) = listener.accept().await?;
+            let app_clone = app.clone();
+
+            tokio::spawn(async move {
+                let io = hyper_util::rt::TokioIo::new(stream);
+                let service = app_clone.clone();
+                
+                let tower_service = tower::service_fn(move |req: axum::http::Request<hyper::body::Incoming>| {
+                    let mut service = service.clone();
+                    async move {
+                        let req = req.map(axum::body::Body::new);
+                        service.call(req).await
+                    }
+                });
+
+                let hyper_service = hyper_util::service::TowerToHyperService::new(tower_service);
+
+                if let Err(err) = Builder::new(TokioExecutor::new())
+                    .serve_connection(io, hyper_service)
+                    .await
+                {
+                    tracing::error!("UDS 连接处理错误: {}", err);
+                }
+            });
+
+        }
+
     } else {
-        let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+        // TCP 模式
+        let port = std::env::var("PORT")
+            .unwrap_or_else(|_| "8080".to_string())
+            .parse::<u16>()
+            .unwrap_or(8080);
+            
+        let addr = SocketAddr::from(([0, 0, 0, 0], port));
         let listener = tokio::net::TcpListener::bind(addr).await?;
         tracing::info!("正在监听 HTTP: {}", addr);
         axum::serve(listener, app).await?;
     }
+
+
 
 
     Ok(())
