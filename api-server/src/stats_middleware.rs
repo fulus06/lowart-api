@@ -22,8 +22,12 @@ pub async fn stats_middleware(
 
     // 处理请求
     let response = next.run(req).await;
-    
     let duration = start.elapsed().as_millis() as i64;
+
+    // 从响应扩展中提取 ModelId
+    let model_id = response.extensions().get::<crate::handlers::ModelId>()
+        .map(|m| m.0.clone())
+        .unwrap_or_else(|| "unknown".to_string());
     
     // 异步记录统计
     let db = state.model_manager.db();
@@ -32,7 +36,7 @@ pub async fn stats_middleware(
         let stat = UsageStat {
             id: 0, // 自动递增
             user_id,
-            model_id: "unknown".to_string(), // 后续可从 extensions 获取
+            model_id,
             request_tokens: 0,
             response_tokens: 0,
             request_count: 1,
@@ -44,6 +48,7 @@ pub async fn stats_middleware(
             tracing::error!("记录统计数据失败: {}", e);
         }
     });
+
     
     response
 }
