@@ -18,7 +18,7 @@ pub struct User {
 
 
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow, Clone)]
 pub struct ModelConfig {
     pub id: String,
     pub title: String,

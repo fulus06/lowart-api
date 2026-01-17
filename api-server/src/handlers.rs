@@ -1,24 +1,15 @@
 use axum::{Json, response::IntoResponse, extract::State, Extension};
-
-
-use serde_json::{Value, json};
-
-
-use utils::Result;
 use axum::response::sse::{Event, Sse};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use db::SessionRepo;
 use std::sync::Arc;
-use crate::router::AppState;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use futures::Stream;
 
 #[derive(Clone)]
 pub struct ModelId(pub String);
-
-
-
-use std::pin::Pin;
-
-
-use std::task::{Context, Poll};
-use futures::Stream;
 
 struct TokenAccountingStream<S> {
     inner: S,
@@ -31,14 +22,13 @@ struct TokenAccountingStream<S> {
 
 impl<S> Stream for TokenAccountingStream<S> 
 where 
-    S: Stream<Item = Result<Value, utils::Error>> + Unpin 
+    S: Stream<Item = utils::Result<Value>> + Unpin 
 {
-    type Item = Result<Event, std::convert::Infallible>;
+    type Item = std::result::Result<Event, std::convert::Infallible>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(val))) => {
-                // 累加内容 (适配 OpenAI 格式)
                 if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
                     if let Some(delta) = choices.get(0).and_then(|c| c.get("delta")) {
                         if let Some(content) = delta.get("content").and_then(|t| t.as_str()) {
@@ -52,35 +42,18 @@ where
                 Poll::Ready(Some(Ok(Event::default().event("error").data(e.to_string()))))
             }
             Poll::Ready(None) => {
-                // 流结束，触发异步计费与统计
-                let content = std::mem::take(&mut self.accumulated_content);
-                let user = self.user.clone();
+                let content = self.accumulated_content.clone();
+                let user_id = self.user.id.clone();
                 let model_id = self.model_id.clone();
                 let req_tokens = self.req_tokens;
-                let db = Arc::clone(&self.db);
-                
+                let db = self.db.clone();
+
                 tokio::spawn(async move {
                     use core::TokenCounter;
                     let res_tokens = TokenCounter::count_tokens(&content);
-                    let total = req_tokens + res_tokens;
-                    
-                    if total > 0 {
-                        let user_repo = db::UserRepo::new(&db);
-                        let _ = user_repo.increment_token_usage(&user.id, total as i64).await;
-                    }
-                    
-                    let stats_repo = db::StatsRepo::new(&db);
-                    let _ = stats_repo.record(db::UsageStat {
-                        id: 0,
-                        user_id: user.id,
-                        model_id,
-                        request_tokens: req_tokens as i64,
-                        response_tokens: res_tokens as i64,
-                        request_count: 1,
-                        response_count: 1,
-                        duration_ms: 0,
-                        timestamp: chrono::Utc::now(),
-                    }).await;
+                    let total_tokens = (req_tokens + res_tokens) as i64;
+                    let _ = db::UserRepo::new(&db).increment_token_usage(&user_id, total_tokens).await;
+                    let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_id, req_tokens as i64, res_tokens as i64).await;
                 });
                 Poll::Ready(None)
             }
@@ -89,78 +62,40 @@ where
     }
 }
 
-/// AI 请求处理器
-/// 实现逻辑: 执行请求格式转换 -> 路由到目标模型 -> 执行响应转换。
-/// 支持“流式输出”：如果请求中包含 `stream: true`，则返回 SSE。
 pub async fn chat_completions(
-    State(state): State<AppState>,
+    State(state): State<crate::router::AppState>,
     Extension(user): Extension<db::User>,
-    Json(payload): Json<Value>
+    Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let model_manager = &state.model_manager;
-    let rhai_engine = &state.rhai_engine;
+    let model_id = match payload.get("model").and_then(|m| m.as_str()) {
+        Some(m) => m,
+        None => return (axum::http::StatusCode::BAD_REQUEST, "Missing model").into_response(),
+    };
 
-    let model_id = payload.get("model")
-        .and_then(|m| m.as_str())
-        .unwrap_or("gpt-4");
-
-    // 1. 获取动态模型适配器及转换脚本
-    let (model, req_script, res_script) = match model_manager.get_model_with_scripts(model_id).await {
-        Ok(res) => res,
+    let (model, request_script, _response_script) = match state.model_manager.get_model_with_scripts(model_id).await {
+        Ok(m) => m,
         Err(e) => return (axum::http::StatusCode::NOT_FOUND, e.to_string()).into_response(),
     };
 
-    // 2. 注入 MCP 工具 (如果模型支持)
-
-    // 聚合所有 MCP 客户端的工具并转换为 OpenAI 格式
-    let mut final_payload = payload.clone();
-    if let Ok(mcp_tools) = state.mcp_manager.list_all_tools().await {
-        if !mcp_tools.is_empty() {
-            let mut openai_tools = Vec::new();
-            for tool in mcp_tools {
-                openai_tools.push(json!({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema
-                    }
-                }));
-            }
-            
-            // 合并到 payload
-            if let Some(existing_tools) = final_payload.get_mut("tools") {
-                if let Some(tools_arr) = existing_tools.as_array_mut() {
-                    tools_arr.extend(openai_tools);
-                }
-            } else {
-                final_payload["tools"] = json!(openai_tools);
-            }
+    // 应用 Rhai 转换 (Request)
+    let payload_val: Value = if let Some(script) = request_script {
+        match state.rhai_engine.transform(&script, payload.clone()) {
+            Ok(p) => p,
+            Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
-    }
+    } else {
+        payload.clone()
+    };
 
-    // 3. 执行请求转换 (如果配置了脚本)
+    let stream_mode = payload_val.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
 
-    if let Some(script) = req_script {
-        match rhai_engine.transform(&script, final_payload) {
-            Ok(new_payload) => final_payload = new_payload,
-            Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("请求转换失败: {}", e)).into_response(),
-        }
-    }
-
-
-    // 3. 判断是否为流式请求
-    let is_stream = final_payload.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
-
-    if is_stream {
-        match model.chat_completions_stream(final_payload.clone()).await {
+    if stream_mode {
+        match model.chat_completions_stream(payload_val.clone()).await {
             Ok(stream) => {
                 use core::TokenCounter;
-                let req_tokens = if let Some(msgs) = final_payload.get("messages") {
-                    TokenCounter::count_messages_tokens(msgs)
-                } else {
-                    0
-                };
+                let req_tokens = payload_val.get("messages")
+                    .map(|m| TokenCounter::count_messages_tokens(m))
+                    .unwrap_or(0);
 
                 let accounting_stream = TokenAccountingStream {
                     inner: stream,
@@ -177,25 +112,23 @@ pub async fn chat_completions(
             Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
-        // --- 非流式请求 工具调用治理循环 ---
-        let mut current_payload = final_payload.clone();
+        let mut current_payload = payload_val.clone();
         let mut total_req_tokens = 0;
         let mut total_res_tokens = 0;
-        let max_iterations = 5; // 防止死循环
+        let max_iterations = 5;
 
         for _ in 0..max_iterations {
             match model.chat_completions(current_payload.clone()).await {
                 Ok(res) => {
-                    // 记录 Token
                     use core::TokenCounter;
                     if let Some(msgs) = current_payload.get("messages") {
                         total_req_tokens += TokenCounter::count_messages_tokens(msgs);
                     }
 
-                    // 检查响应中的 tool_calls
-                    let choice = res.get("choices").and_then(|c| c.as_array()).and_then(|a| a.get(0));
-                    let message = choice.and_then(|c| c.get("message"));
-                    let tool_calls = message.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array());
+                    let choices = res.get("choices").and_then(|v| v.as_array());
+                    let choice = choices.and_then(|a| a.get(0));
+                    let message_obj = choice.and_then(|c| c.get("message"));
+                    let tool_calls = message_obj.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array());
 
                     if let Some(calls) = tool_calls {
                         if !calls.is_empty() {
@@ -210,7 +143,6 @@ pub async fn chat_completions(
                                 let tool_name = call["function"]["name"].as_str().unwrap_or_default();
                                 let arguments = call["function"]["arguments"].clone();
                                 
-                                // 检查治理策略
                                 let policy = policy_repo.get_policy(tool_name, Some(&user.id)).await.unwrap_or_else(|_| "auto".to_string());
                                 
                                 match policy.as_str() {
@@ -226,7 +158,6 @@ pub async fn chat_completions(
                                         requires_confirm.push(call.clone());
                                     },
                                     _ => {
-                                        // "auto" or default: 执行工具
                                         let result = match state.mcp_manager.call_tool_any(tool_name, arguments).await {
                                             Ok(out) => out.to_string(),
                                             Err(e) => format!("工具调用失败: {}", e),
@@ -241,83 +172,142 @@ pub async fn chat_completions(
                                 }
                             }
 
-
-                            // 如果有需要确认的工具，中断循环，返回确认结构
                             if !requires_confirm.is_empty() {
+                                let session_id = uuid::Uuid::new_v4().to_string();
+                                let session_repo = db::SessionRepo::new(&db_conn.pool);
+                                
+                                let mut messages = current_payload["messages"].as_array().unwrap().clone();
+                                if let Some(m) = message_obj {
+                                     messages.push(m.clone());
+                                }
+                                let mut save_payload = current_payload.clone();
+                                save_payload["messages"] = json!(messages);
+
+                                if let Err(e) = session_repo.save_session(
+                                    &session_id, 
+                                    &user.id, 
+                                    model_id, 
+                                    &save_payload, 
+                                    &requires_confirm
+                                ).await {
+                                    tracing::error!("保存会话状态失败: {}", e);
+                                    return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "保存授权上下文失败").into_response();
+                                }
+
                                 return Json(json!({
                                     "status": "require_confirmation",
+                                    "session_id": session_id,
                                     "user_id": user.id,
                                     "model_id": model_id,
-                                    "tool_calls": requires_confirm,
-                                    "partial_response": res
+                                    "tool_calls": requires_confirm
                                 })).into_response();
                             }
 
-                            // 组织消息并继续对话
-                            let mut messages = current_payload["messages"].as_array().unwrap().clone();
-                            messages.push(message.unwrap().clone());
-                            messages.extend(tool_results);
-                            current_payload["messages"] = json!(messages);
-                            
-                            // 继续下一次循环 call_model
+                            let mut msgs = current_payload["messages"].as_array().unwrap().clone();
+                            if let Some(m) = message_obj {
+                                msgs.push(m.clone());
+                            }
+                            msgs.extend(tool_results);
+                            current_payload["messages"] = json!(msgs);
                             continue;
                         }
                     }
 
-                    // 没有 tool_calls，结束循环
-                    // 最终计费
-                    if let Some(choices) = res.get("choices").and_then(|v| v.as_array()) {
-                        if let Some(content) = choices.get(0).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|t| t.as_str()) {
-                            total_res_tokens += TokenCounter::count_tokens(content);
+                    if let Some(choices_arr) = res.get("choices").and_then(|v| v.as_array()) {
+                        if let Some(choice_first) = choices_arr.get(0) {
+                            if let Some(m) = choice_first.get("message") {
+                                if let Some(content) = m.get("content").and_then(|v| v.as_str()) {
+                                    total_res_tokens += TokenCounter::count_tokens(content);
+                                }
+                            }
                         }
                     }
 
-                    let db_conn = state.model_manager.db();
-                    let u_id = user.id.clone();
-                    let m_id = model_id.to_string();
+                    let user_id = user.id.clone();
+                    let model_repo_id = model_id.to_string();
+                    let db = state.model_manager.db();
                     tokio::spawn(async move {
-                        let total = total_req_tokens + total_res_tokens;
-                        let user_repo = db::UserRepo::new(&db_conn);
-                        let _ = user_repo.increment_token_usage(&u_id, total as i64).await;
-
-                        let stats_repo = db::StatsRepo::new(&db_conn);
-                        let _ = stats_repo.record(db::UsageStat {
-                            id: 0,
-                            user_id: u_id,
-                            model_id: m_id,
-                            request_tokens: total_req_tokens as i64,
-                            response_tokens: total_res_tokens as i64,
-                            request_count: 1,
-                            response_count: 1,
-                            duration_ms: 0,
-                            timestamp: chrono::Utc::now(),
-                        }).await;
+                         let _ = db::UserRepo::new(&db).increment_token_usage(&user_id, (total_req_tokens + total_res_tokens) as i64).await;
+                         let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_repo_id, total_req_tokens as i64, total_res_tokens as i64).await;
                     });
 
-                    // 执行最终响应转换
-                    let mut final_res_val = res.clone();
-                    if let Some(script) = res_script {
-                        match rhai_engine.transform(&script, final_res_val) {
-                            Ok(new_res) => final_res_val = new_res,
-                            Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("响应转换失败: {}", e)).into_response(),
-                        }
-                    }
-
-                    let mut response = Json(final_res_val).into_response();
-                    response.extensions_mut().insert(ModelId(model_id.to_string()));
-                    return response;
+                    let mut axum_res = Json(res).into_response();
+                    axum_res.extensions_mut().insert(ModelId(model_id.to_string()));
+                    return axum_res;
                 },
                 Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             }
         }
-
-        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "达到最大工具调用次数").into_response()
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Max iterations reached").into_response()
     }
-
 }
 
+#[derive(Deserialize)]
+pub struct ToolConfirmRequest {
+    pub session_id: String,
+    pub approved_ids: Vec<String>,
+}
 
+pub async fn confirm_tool_call(
+    State(state): State<crate::router::AppState>,
+    Extension(user): Extension<db::User>,
+    Json(payload): Json<ToolConfirmRequest>
+) -> impl IntoResponse {
+    let db_conn = state.model_manager.db();
+    let session_repo = db::SessionRepo::new(&db_conn.pool);
 
+    let session = match session_repo.load_session(&payload.session_id).await {
+        Ok(Some(s)) => s,
+        Ok(None) => return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if session.user_id != user.id {
+        return (axum::http::StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+
+    let mut current_payload: Value = serde_json::from_str(&session.payload).unwrap();
+    let pending_calls: Vec<Value> = serde_json::from_str(&session.pending_tool_calls).unwrap();
+
+    let mut tool_results = Vec::new();
+    let mut messages = current_payload["messages"].as_array().unwrap().clone();
+    
+    for call in pending_calls {
+        let call_id = call["id"].as_str().unwrap_or_default();
+        let tool_name = call["function"]["name"].as_str().unwrap_or_default();
+        let arguments = call["function"]["arguments"].clone();
+
+        if payload.approved_ids.contains(&call_id.to_string()) {
+            let result = match state.mcp_manager.call_tool_any(tool_name, arguments).await {
+                Ok(out) => out.to_string(),
+                Err(e) => format!("Error: {}", e),
+            };
+            tool_results.push(json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": tool_name,
+                "content": result
+            }));
+        } else {
+            tool_results.push(json!({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": tool_name,
+                "content": "Rejected by user"
+            }));
+        }
+    }
+
+    messages.extend(tool_results);
+    current_payload["messages"] = json!(messages);
+
+    let _ = session_repo.delete_session(&payload.session_id).await;
+
+    (axum::http::StatusCode::OK, Json(json!({
+        "status": "success",
+        "next_payload": current_payload
+    }))).into_response()
+}
 
 pub async fn health_check() -> impl IntoResponse {
     Json(json!({"status": "ok"}))

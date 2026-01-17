@@ -40,8 +40,10 @@ pub fn create_router(state: AppState) -> Router {
     // 标准 API 接口 (需 Auth)
     let api_routes = Router::new()
         .route("/chat/completions", post(handlers::chat_completions))
+        .route("/tools/confirm", post(handlers::confirm_tool_call))
         .layer(middleware::from_fn_with_state(state.clone(), limit_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), stats_middleware));
+
 
     Router::new()
         .merge(public_routes)

@@ -30,4 +30,20 @@ impl<'a> StatsRepo<'a> {
         .await?;
         Ok(())
     }
+
+    /// 便捷方法：仅记录 Token 和模型标识，其他字段使用默认值
+    pub async fn record_usage(&self, user_id: &str, model_id: &str, req_tokens: i64, res_tokens: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO usage_stats (user_id, model_id, request_tokens, response_tokens, request_count, response_count, duration_ms, timestamp) 
+             VALUES (?, ?, ?, ?, 1, 1, 0, ?)"
+        )
+        .bind(user_id)
+        .bind(model_id)
+        .bind(req_tokens)
+        .bind(res_tokens)
+        .bind(chrono::Utc::now())
+        .execute(&self.db.pool)
+        .await?;
+        Ok(())
+    }
 }
