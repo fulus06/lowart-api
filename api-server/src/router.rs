@@ -9,26 +9,32 @@ use crate::auth_middleware::auth_middleware;
 use crate::limit_middleware::limit_middleware;
 use crate::admin_middleware::admin_middleware;
 use crate::stats_middleware::stats_middleware;
+use crate::metrics_middleware::metrics_middleware;
+use metrics_exporter_prometheus::PrometheusHandle;
 
-use core::{ModelManager, RhaiEngine};
+use lowart_core::{ModelManager, RhaiEngine};
 use std::sync::Arc;
+
 
 /// 全局应用状态
 #[derive(Clone)]
 pub struct AppState {
     pub model_manager: Arc<ModelManager>,
     pub rhai_engine: Arc<RhaiEngine>,
-    pub mcp_manager: Arc<core::McpManager>,
-    pub agent_orchestrator: Arc<core::AgentOrchestrator>,
+    pub mcp_manager: Arc<lowart_core::McpManager>,
+    pub agent_orchestrator: Arc<lowart_core::AgentOrchestrator>,
     pub rate_limit_cache: Arc<dashmap::DashMap<(String, i64), i64>>, // (user_id, minute_timestamp) -> count
 }
 
 
 
-pub fn create_router(state: AppState) -> Router {
+pub fn create_router(state: AppState, metrics_handle: PrometheusHandle) -> Router {
     // 公开接口
     let public_routes = Router::new()
-        .route("/health", get(handlers::health_check));
+        .route("/health", get(handlers::health_check))
+        .route("/metrics", get(move || async move {
+            metrics_handle.render()
+        }));
 
     // 管理接口 (需 Auth + Admin 权限)
     let admin_routes = Router::new()
@@ -46,12 +52,12 @@ pub fn create_router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), limit_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), stats_middleware));
 
-
-
     Router::new()
         .merge(public_routes)
         .nest("/admin", admin_routes)
         .nest("/v1", api_routes)
+        .layer(middleware::from_fn_with_state(state.clone(), metrics_middleware)) // 指标记录优先
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state)
 }
+

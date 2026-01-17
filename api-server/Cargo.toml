@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-core = { path = "../core" }
+lowart-core = { path = "../lowart-core" }
 utils = { path = "../utils" }
 auth = { path = "../auth" }
 db = { path = "../db" }
@@ -23,6 +23,8 @@ hyper-util.workspace = true
 tower.workspace = true
 hyper.workspace = true
 uuid.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 
 
 

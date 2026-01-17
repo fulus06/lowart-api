@@ -2,8 +2,9 @@
 resolver = "2"
 members = [
     "api-server",
-    "core",
+    "lowart-core",
     "protocols",
+
     "models",
     "db",
     "auth",
@@ -48,10 +49,6 @@ dashmap = "6.0"
 hyper-util = { version = "0.1", features = ["full"] }
 tower = { version = "0.4", features = ["full"] }
 hyper = { version = "1.0", features = ["full"] }
-
-
-
-
-
-
-
+# 指标监控
+metrics = "0.22"
+metrics-exporter-prometheus = "0.15"

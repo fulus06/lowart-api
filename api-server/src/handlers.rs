@@ -1,13 +1,16 @@
 use axum::{Json, response::IntoResponse, extract::State, Extension};
 use axum::response::sse::{Event, Sse};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
-use db::{SessionRepo, JobRepo, AsyncJob};
-use utils::{Result, Error};
+use db::{JobRepo, AsyncJob};
+use utils::Result;
+
 use std::sync::Arc;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use futures::Stream;
+use metrics::counter;
+
 
 #[derive(Clone)]
 pub struct ModelId(pub String);
@@ -50,12 +53,19 @@ where
                 let db = self.db.clone();
 
                 tokio::spawn(async move {
-                    use core::TokenCounter;
+                    use lowart_core::TokenCounter;
                     let res_tokens = TokenCounter::count_tokens(&content);
                     let total_tokens = (req_tokens + res_tokens) as i64;
+                    
+                    // 增加实时指标记录
+                    counter!("gateway_tokens_total", "type" => "request", "model" => model_id.clone()).increment(req_tokens as u64);
+                    counter!("gateway_tokens_total", "type" => "response", "model" => model_id.clone()).increment(res_tokens as u64);
+
                     let _ = db::UserRepo::new(&db).increment_token_usage(&user_id, total_tokens).await;
                     let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_id, req_tokens as i64, res_tokens as i64).await;
                 });
+
+
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
@@ -130,9 +140,10 @@ pub async fn chat_completions(
                     let _ = job_repo.update_status(&job_id_clone, "completed", Some(&res_str), None).await;
                     
                     // Token 统计
-                    use core::TokenCounter;
+                    use lowart_core::TokenCounter;
                     let req_tokens = TokenCounter::count_messages_tokens(payload_val.get("messages").unwrap_or(&json!([])));
                     let res_tokens = TokenCounter::count_tokens(res.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|c| c.as_str()).unwrap_or_default());
+
                     
                     let _ = db::UserRepo::new(&db_clone).increment_token_usage(&user_id, (req_tokens + res_tokens) as i64).await;
                     let _ = db::StatsRepo::new(&db_clone).record_usage(&user_id, &model_id_str, req_tokens as i64, res_tokens as i64).await;
@@ -152,8 +163,9 @@ pub async fn chat_completions(
     if stream_mode {
         match model.chat_completions_stream(payload_val.clone()).await {
             Ok(stream) => {
-                use core::TokenCounter;
+                use lowart_core::TokenCounter;
                 let req_tokens = payload_val.get("messages")
+
                     .map(|m| TokenCounter::count_messages_tokens(m))
                     .unwrap_or(0);
 
@@ -180,8 +192,9 @@ pub async fn chat_completions(
         for _ in 0..max_iterations {
             match model.chat_completions(current_payload.clone()).await {
                 Ok(res) => {
-                    use core::TokenCounter;
+                    use lowart_core::TokenCounter;
                     if let Some(msgs) = current_payload.get("messages") {
+
                         total_req_tokens += TokenCounter::count_messages_tokens(msgs);
                     }
 
@@ -277,19 +290,25 @@ pub async fn chat_completions(
                         if let Some(choice_first) = choices_arr.get(0) {
                             if let Some(m) = choice_first.get("message") {
                                 if let Some(content) = m.get("content").and_then(|v| v.as_str()) {
-                                    total_res_tokens += TokenCounter::count_tokens(content);
+                                    total_res_tokens += lowart_core::TokenCounter::count_tokens(content);
                                 }
                             }
                         }
                     }
 
+
                     let user_id = user.id.clone();
                     let model_repo_id = model_id.to_string();
                     let db = state.model_manager.db();
                     tokio::spawn(async move {
+                         // 增加实时指标记录
+                         counter!("gateway_tokens_total", "type" => "request", "model" => model_repo_id.clone()).increment(total_req_tokens as u64);
+                         counter!("gateway_tokens_total", "type" => "response", "model" => model_repo_id.clone()).increment(total_res_tokens as u64);
+
                          let _ = db::UserRepo::new(&db).increment_token_usage(&user_id, (total_req_tokens + total_res_tokens) as i64).await;
                          let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_repo_id, total_req_tokens as i64, total_res_tokens as i64).await;
                     });
+
 
                     let mut axum_res = Json(res).into_response();
                     axum_res.extensions_mut().insert(ModelId(model_id.to_string()));

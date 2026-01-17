@@ -5,6 +5,9 @@ mod stats_middleware;
 mod limit_middleware;
 mod admin_handlers;
 mod admin_middleware;
+mod metrics_middleware;
+
+use metrics_exporter_prometheus::PrometheusBuilder;
 
 use utils::logger;
 use db::DbConnection;
@@ -19,16 +22,23 @@ async fn main() -> anyhow::Result<()> {
     logger::init();
     tracing::info!("Lowart-api 正在启动...");
 
-    // 2. 初始化数据库
+    // 2. 初始化监控 指标 (Prometheus)
+    let metrics_handle = PrometheusBuilder::new()
+        .install_recorder()
+        .expect("无法安装 Prometheus recorder");
+    tracing::info!("指标监控系统 (Prometheus) 已启动");
+
+    // 3. 初始化数据库
     let db = Arc::new(DbConnection::new().await?);
     tracing::info!("数据库连接已建立");
 
-    // 3. 初始化核心组件
-    let model_manager = Arc::new(core::ModelManager::new(Arc::clone(&db)));
-    let rhai_engine = Arc::new(core::RhaiEngine::new());
-    let agent_orchestrator = Arc::new(core::AgentOrchestrator::new());
-    let mcp_manager = Arc::new(core::McpManager::new(Arc::clone(&agent_orchestrator)));
+    // 4. 初始化核心组件
+    let model_manager = Arc::new(lowart_core::ModelManager::new(Arc::clone(&db)));
+    let rhai_engine = Arc::new(lowart_core::RhaiEngine::new());
+    let agent_orchestrator = Arc::new(lowart_core::AgentOrchestrator::new());
+    let mcp_manager = Arc::new(lowart_core::McpManager::new(Arc::clone(&agent_orchestrator)));
     let rate_limit_cache = Arc::new(dashmap::DashMap::new());
+
 
     
     let state = router::AppState {
@@ -40,10 +50,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
 
-
-
-    // 4. 构建路由
-    let app = router::create_router(state);
+    // 5. 构建路由
+    let app = router::create_router(state, metrics_handle);
 
 
 
