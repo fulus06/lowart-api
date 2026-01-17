@@ -2,7 +2,8 @@ use axum::{Json, response::IntoResponse, extract::State, Extension};
 use axum::response::sse::{Event, Sse};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use db::{JobRepo, AsyncJob};
+use db::{JobRepo, AsyncJob, FallbackRepo};
+
 use utils::Result;
 
 use std::sync::Arc;
@@ -78,248 +79,297 @@ pub async fn chat_completions(
     Extension(user): Extension<db::User>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let model_id = match payload.get("model").and_then(|m| m.as_str()) {
-        Some(m) => m,
+    let primary_model_id = match payload.get("model").and_then(|m| m.as_str()) {
+        Some(m) => m.to_string(),
         None => return (axum::http::StatusCode::BAD_REQUEST, "Missing model").into_response(),
     };
 
-    let (model, request_script, _response_script) = match state.model_manager.get_model_with_scripts(model_id).await {
-        Ok(m) => m,
-        Err(e) => return (axum::http::StatusCode::NOT_FOUND, e.to_string()).into_response(),
-    };
-
-    // 应用 Rhai 转换 (Request)
-    let payload_val: Value = if let Some(script) = request_script {
-        match state.rhai_engine.transform(&script, payload.clone()) {
-            Ok(p) => p,
-            Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        }
-    } else {
-        payload.clone()
-    };
-
-    let stream_mode = payload_val.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
-    let async_mode = payload_val.get("async").and_then(|a| a.as_bool()).unwrap_or(false);
-
-    // --- 处理异步任务模式 ---
-    if async_mode {
-        let job_id = uuid::Uuid::new_v4().to_string();
-        let db_conn = state.model_manager.db();
-        let job_repo = JobRepo::new(&db_conn.pool);
-        
-        let job = AsyncJob {
-            job_id: job_id.clone(),
-            user_id: user.id.clone(),
-            status: "pending".to_string(),
-            payload: Some(payload_val.to_string()),
-            result: None,
-            error: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-
-        if let Err(e) = job_repo.create_job(&job).await {
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-        }
-
-        // 后端执行
-        let user_id = user.id.clone();
-        let model_id_str = model_id.to_string();
-        let db_clone = Arc::clone(&db_conn);
-        let model_clone = Arc::clone(&model);
-        let payload_clone = payload_val.clone();
-        let job_id_clone = job_id.clone();
-
-        tokio::spawn(async move {
-            let job_repo = JobRepo::new(&db_clone.pool);
-            let _ = job_repo.update_status(&job_id_clone, "running", None, None).await;
-
-            match model_clone.chat_completions(payload_clone).await {
-                Ok(res) => {
-                    let res_str = res.to_string();
-                    let _ = job_repo.update_status(&job_id_clone, "completed", Some(&res_str), None).await;
-                    
-                    // Token 统计
-                    use lowart_core::TokenCounter;
-                    let req_tokens = TokenCounter::count_messages_tokens(payload_val.get("messages").unwrap_or(&json!([])));
-                    let res_tokens = TokenCounter::count_tokens(res.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|c| c.as_str()).unwrap_or_default());
-
-                    
-                    let _ = db::UserRepo::new(&db_clone).increment_token_usage(&user_id, (req_tokens + res_tokens) as i64).await;
-                    let _ = db::StatsRepo::new(&db_clone).record_usage(&user_id, &model_id_str, req_tokens as i64, res_tokens as i64).await;
-                }
-                Err(e) => {
-                    let _ = job_repo.update_status(&job_id_clone, "failed", None, Some(&e.to_string())).await;
-                }
-            }
-        });
-
-        return Json(json!({
-            "status": "async_started",
-            "job_id": job_id
-        })).into_response();
+    // 1. 获取所有候选模型 (主模型 + 降级模型)
+    let db_conn = state.model_manager.db();
+    let fallback_repo = FallbackRepo::new(&db_conn);
+    let mut candidate_models = vec![primary_model_id.clone()];
+    if let Ok(mut fallbacks) = fallback_repo.get_fallbacks_for_model(&primary_model_id).await {
+        candidate_models.append(&mut fallbacks);
     }
 
-    if stream_mode {
-        match model.chat_completions_stream(payload_val.clone()).await {
-            Ok(stream) => {
-                use lowart_core::TokenCounter;
-                let req_tokens = payload_val.get("messages")
-
-                    .map(|m| TokenCounter::count_messages_tokens(m))
-                    .unwrap_or(0);
-
-                let accounting_stream = TokenAccountingStream {
-                    inner: stream,
-                    user: user.clone(),
-                    model_id: model_id.to_string(),
-                    req_tokens,
-                    accumulated_content: String::new(),
-                    db: state.model_manager.db(),
-                };
-                let mut res = Sse::new(accounting_stream).into_response();
-                res.extensions_mut().insert(ModelId(model_id.to_string()));
-                res
-            },
-            Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    // 2. 依次尝试候选模型
+    for (i, current_model_id) in candidate_models.iter().enumerate() {
+        // A. 断路器检查 (主模型除外，或者主模型也检查以保安全)
+        if !state.circuit_breaker.is_allowed(current_model_id).await {
+            tracing::warn!("模型 {} 处于熔断状态，跳过", current_model_id);
+            continue;
         }
-    } else {
-        let mut current_payload = payload_val.clone();
-        let mut total_req_tokens = 0;
-        let mut total_res_tokens = 0;
-        let max_iterations = 5;
 
-        for _ in 0..max_iterations {
-            match model.chat_completions(current_payload.clone()).await {
-                Ok(res) => {
-                    use lowart_core::TokenCounter;
-                    if let Some(msgs) = current_payload.get("messages") {
+        // B. 获取模型适配器
+        let (model, request_script, _response_script) = match state.model_manager.get_model_with_scripts(current_model_id).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!("获取模型 {} 失败: {}", current_model_id, e);
+                continue;
+            }
+        };
 
-                        total_req_tokens += TokenCounter::count_messages_tokens(msgs);
+        // C. 应用 Rhai 转换 (每次可能需要基于新的模型重新转换)
+        let payload_val: Value = if let Some(script) = request_script {
+            match state.rhai_engine.transform(&script, payload.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!("Rhai 转换失败 ({}): {}", current_model_id, e);
+                    continue;
+                }
+            }
+        } else {
+            payload.clone()
+        };
+
+        let stream_mode = payload_val.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+        let async_mode = payload_val.get("async").and_then(|a| a.as_bool()).unwrap_or(false);
+
+        // --- 进入核心执行逻辑 ---
+
+
+        // --- 处理异步任务模式 ---
+        if async_mode {
+            let job_id = uuid::Uuid::new_v4().to_string();
+            let job_repo = JobRepo::new(&db_conn.pool);
+            
+            let job = AsyncJob {
+                job_id: job_id.clone(),
+                user_id: user.id.clone(),
+                status: "pending".to_string(),
+                payload: Some(payload_val.to_string()),
+                result: None,
+                error: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            };
+
+            if let Err(e) = job_repo.create_job(&job).await {
+                return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+            }
+
+            // 后端异步执行 (注: 异步任务内部暂不实现多级降级，仅对当前模型负责)
+            let user_id = user.id.clone();
+            let model_id_str = current_model_id.clone();
+            let db_clone = Arc::clone(&db_conn);
+            let model_clone = Arc::clone(&model);
+            let payload_clone = payload_val.clone();
+            let job_id_clone = job_id.clone();
+            let cb_clone = Arc::clone(&state.circuit_breaker);
+
+            tokio::spawn(async move {
+                let job_repo = JobRepo::new(&db_clone.pool);
+                let _ = job_repo.update_status(&job_id_clone, "running", None, None).await;
+
+                match model_clone.chat_completions(payload_clone.clone()).await {
+
+                    Ok(res) => {
+                        cb_clone.report_result(&model_id_str, true).await;
+                        let res_str = res.to_string();
+                        let _ = job_repo.update_status(&job_id_clone, "completed", Some(&res_str), None).await;
+                        
+                        // Token 统计
+                        use lowart_core::TokenCounter;
+                        let req_tokens = TokenCounter::count_messages_tokens(payload_clone.get("messages").unwrap_or(&json!([])));
+                        let res_tokens = TokenCounter::count_tokens(res.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|c| c.as_str()).unwrap_or_default());
+
+                        let _ = db::UserRepo::new(&db_clone).increment_token_usage(&user_id, (req_tokens + res_tokens) as i64).await;
+                        let _ = db::StatsRepo::new(&db_clone).record_usage(&user_id, &model_id_str, req_tokens as i64, res_tokens as i64).await;
                     }
+                    Err(e) => {
+                        cb_clone.report_result(&model_id_str, false).await;
+                        let _ = job_repo.update_status(&job_id_clone, "failed", None, Some(&e.to_string())).await;
+                    }
+                }
+            });
 
-                    let choices = res.get("choices").and_then(|v| v.as_array());
-                    let choice = choices.and_then(|a| a.get(0));
-                    let message_obj = choice.and_then(|c| c.get("message"));
-                    let tool_calls = message_obj.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array());
+            return Json(json!({
+                "status": "async_started",
+                "job_id": job_id,
+                "model": current_model_id
+            })).into_response();
+        }
 
-                    if let Some(calls) = tool_calls {
-                        if !calls.is_empty() {
-                            let db_conn = state.model_manager.db();
-                            let policy_repo = db::ToolPolicyRepo::new(&db_conn.pool);
-                            
-                            let mut tool_results = Vec::new();
-                            let mut requires_confirm = Vec::new();
+        if stream_mode {
+            match model.chat_completions_stream(payload_val.clone()).await {
+                Ok(stream) => {
+                    state.circuit_breaker.report_result(current_model_id, true).await;
+                    use lowart_core::TokenCounter;
+                    let req_tokens = payload_val.get("messages")
+                        .map(|m| TokenCounter::count_messages_tokens(m))
+                        .unwrap_or(0);
 
-                            for call in calls {
-                                let call_id = call["id"].as_str().unwrap_or_default();
-                                let tool_name = call["function"]["name"].as_str().unwrap_or_default();
-                                let arguments = call["function"]["arguments"].clone();
+                    let accounting_stream = TokenAccountingStream {
+                        inner: stream,
+                        user: user.clone(),
+                        model_id: current_model_id.clone(),
+                        req_tokens,
+                        accumulated_content: String::new(),
+                        db: state.model_manager.db(),
+                    };
+                    let mut res = Sse::new(accounting_stream).into_response();
+                    res.extensions_mut().insert(ModelId(current_model_id.clone()));
+                    return res;
+                },
+                Err(e) => {
+                    state.circuit_breaker.report_result(current_model_id, false).await;
+                    if i < candidate_models.len() - 1 {
+                        tracing::warn!("模型 {} 流式调用失败，准备降级: {}", current_model_id, e);
+                        continue;
+                    }
+                    return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                }
+            }
+        } else {
+
+            let mut current_payload = payload_val.clone();
+            let mut total_req_tokens = 0;
+            let mut total_res_tokens = 0;
+            let max_iterations = 5;
+
+            for iter in 0..max_iterations {
+                match model.chat_completions(current_payload.clone()).await {
+                    Ok(res) => {
+                        state.circuit_breaker.report_result(current_model_id, true).await;
+                        
+                        use lowart_core::TokenCounter;
+                        if let Some(msgs) = current_payload.get("messages") {
+                            total_req_tokens += TokenCounter::count_messages_tokens(msgs);
+                        }
+
+                        let choices = res.get("choices").and_then(|v| v.as_array());
+                        let choice = choices.and_then(|a| a.get(0));
+                        let message_obj = choice.and_then(|c| c.get("message"));
+                        let tool_calls = message_obj.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array());
+
+                        if let Some(calls) = tool_calls {
+                            if !calls.is_empty() {
+                                let db_conn = state.model_manager.db();
+                                let policy_repo = db::ToolPolicyRepo::new(&db_conn.pool);
                                 
-                                let policy = policy_repo.get_policy(tool_name, Some(&user.id)).await.unwrap_or_else(|_| "auto".to_string());
-                                
-                                match policy.as_str() {
-                                    "block" => {
-                                        tool_results.push(json!({
-                                            "role": "tool",
-                                            "tool_call_id": call_id,
-                                            "name": tool_name,
-                                            "content": "执行失败: 该工具已被审计策略禁用"
-                                        }));
-                                    },
-                                    "confirm" => {
-                                        requires_confirm.push(call.clone());
-                                    },
-                                    _ => {
-                                        let result = match state.mcp_manager.call_tool_any(tool_name, arguments).await {
-                                            Ok(out) => out.to_string(),
-                                            Err(e) => format!("工具调用失败: {}", e),
-                                        };
-                                        tool_results.push(json!({
-                                            "role": "tool",
-                                            "tool_call_id": call_id,
-                                            "name": tool_name,
-                                            "content": result
-                                        }));
+                                let mut tool_results = Vec::new();
+                                let mut requires_confirm = Vec::new();
+
+                                for call in calls {
+                                    let call_id = call["id"].as_str().unwrap_or_default();
+                                    let tool_name = call["function"]["name"].as_str().unwrap_or_default();
+                                    let arguments = call["function"]["arguments"].clone();
+                                    
+                                    let policy = policy_repo.get_policy(tool_name, Some(&user.id)).await.unwrap_or_else(|_| "auto".to_string());
+                                    
+                                    match policy.as_str() {
+                                        "block" => {
+                                            tool_results.push(json!({
+                                                "role": "tool",
+                                                "tool_call_id": call_id,
+                                                "name": tool_name,
+                                                "content": "执行失败: 该工具已被审计策略禁用"
+                                            }));
+                                        },
+                                        "confirm" => {
+                                            requires_confirm.push(call.clone());
+                                        },
+                                        _ => {
+                                            let result = match state.mcp_manager.call_tool_any(tool_name, arguments).await {
+                                                Ok(out) => out.to_string(),
+                                                Err(e) => format!("工具调用失败: {}", e),
+                                            };
+                                            tool_results.push(json!({
+                                                "role": "tool",
+                                                "tool_call_id": call_id,
+                                                "name": tool_name,
+                                                "content": result
+                                            }));
+                                        }
+                                    }
+                                }
+
+                                if !requires_confirm.is_empty() {
+                                    let session_id = uuid::Uuid::new_v4().to_string();
+                                    let session_repo = db::SessionRepo::new(&db_conn.pool);
+                                    
+                                    let mut messages = current_payload["messages"].as_array().unwrap().clone();
+                                    if let Some(m) = message_obj {
+                                         messages.push(m.clone());
+                                    }
+                                    let mut save_payload = current_payload.clone();
+                                    save_payload["messages"] = json!(messages);
+
+                                    if let Err(e) = session_repo.save_session(
+                                        &session_id, 
+                                        &user.id, 
+                                        current_model_id, 
+                                        &save_payload, 
+                                        &requires_confirm
+                                    ).await {
+                                        tracing::error!("保存会话状态失败: {}", e);
+                                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "保存授权上下文失败").into_response();
+                                    }
+
+                                    return Json(json!({
+                                        "status": "require_confirmation",
+                                        "session_id": session_id,
+                                        "user_id": user.id,
+                                        "model_id": current_model_id,
+                                        "tool_calls": requires_confirm
+                                    })).into_response();
+                                }
+
+                                let mut msgs = current_payload["messages"].as_array().unwrap().clone();
+                                if let Some(m) = message_obj {
+                                    msgs.push(m.clone());
+                                }
+                                msgs.extend(tool_results);
+                                current_payload["messages"] = json!(msgs);
+                                continue;
+                            }
+                        }
+
+                        if let Some(choices_arr) = res.get("choices").and_then(|v| v.as_array()) {
+                            if let Some(choice_first) = choices_arr.get(0) {
+                                if let Some(m) = choice_first.get("message") {
+                                    if let Some(content) = m.get("content").and_then(|v| v.as_str()) {
+                                        total_res_tokens += lowart_core::TokenCounter::count_tokens(content);
                                     }
                                 }
                             }
-
-                            if !requires_confirm.is_empty() {
-                                let session_id = uuid::Uuid::new_v4().to_string();
-                                let session_repo = db::SessionRepo::new(&db_conn.pool);
-                                
-                                let mut messages = current_payload["messages"].as_array().unwrap().clone();
-                                if let Some(m) = message_obj {
-                                     messages.push(m.clone());
-                                }
-                                let mut save_payload = current_payload.clone();
-                                save_payload["messages"] = json!(messages);
-
-                                if let Err(e) = session_repo.save_session(
-                                    &session_id, 
-                                    &user.id, 
-                                    model_id, 
-                                    &save_payload, 
-                                    &requires_confirm
-                                ).await {
-                                    tracing::error!("保存会话状态失败: {}", e);
-                                    return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "保存授权上下文失败").into_response();
-                                }
-
-                                return Json(json!({
-                                    "status": "require_confirmation",
-                                    "session_id": session_id,
-                                    "user_id": user.id,
-                                    "model_id": model_id,
-                                    "tool_calls": requires_confirm
-                                })).into_response();
-                            }
-
-                            let mut msgs = current_payload["messages"].as_array().unwrap().clone();
-                            if let Some(m) = message_obj {
-                                msgs.push(m.clone());
-                            }
-                            msgs.extend(tool_results);
-                            current_payload["messages"] = json!(msgs);
-                            continue;
                         }
-                    }
 
-                    if let Some(choices_arr) = res.get("choices").and_then(|v| v.as_array()) {
-                        if let Some(choice_first) = choices_arr.get(0) {
-                            if let Some(m) = choice_first.get("message") {
-                                if let Some(content) = m.get("content").and_then(|v| v.as_str()) {
-                                    total_res_tokens += lowart_core::TokenCounter::count_tokens(content);
-                                }
+                        let user_id = user.id.clone();
+                        let model_repo_id = current_model_id.clone();
+                        let db = state.model_manager.db();
+                        tokio::spawn(async move {
+                             // 增加实时指标记录
+                             counter!("gateway_tokens_total", "type" => "request", "model" => model_repo_id.clone()).increment(total_req_tokens as u64);
+                             counter!("gateway_tokens_total", "type" => "response", "model" => model_repo_id.clone()).increment(total_res_tokens as u64);
+
+                             let _ = db::UserRepo::new(&db).increment_token_usage(&user_id, (total_req_tokens + total_res_tokens) as i64).await;
+                             let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_repo_id, total_req_tokens as i64, total_res_tokens as i64).await;
+                        });
+
+
+                        let mut axum_res = Json(res).into_response();
+                        axum_res.extensions_mut().insert(ModelId(current_model_id.clone()));
+                        return axum_res;
+                    },
+                    Err(e) => {
+                        // 仅在第一轮循环失败时尝试降级
+                        if iter == 0 {
+                            state.circuit_breaker.report_result(current_model_id, false).await;
+                            if i < candidate_models.len() - 1 {
+                                tracing::warn!("模型 {} 调用失败，准备降级: {}", current_model_id, e);
+                                break; // 跳出迭代循环，进入下一候选模型
                             }
                         }
+                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
                     }
-
-
-                    let user_id = user.id.clone();
-                    let model_repo_id = model_id.to_string();
-                    let db = state.model_manager.db();
-                    tokio::spawn(async move {
-                         // 增加实时指标记录
-                         counter!("gateway_tokens_total", "type" => "request", "model" => model_repo_id.clone()).increment(total_req_tokens as u64);
-                         counter!("gateway_tokens_total", "type" => "response", "model" => model_repo_id.clone()).increment(total_res_tokens as u64);
-
-                         let _ = db::UserRepo::new(&db).increment_token_usage(&user_id, (total_req_tokens + total_res_tokens) as i64).await;
-                         let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_repo_id, total_req_tokens as i64, total_res_tokens as i64).await;
-                    });
-
-
-                    let mut axum_res = Json(res).into_response();
-                    axum_res.extensions_mut().insert(ModelId(model_id.to_string()));
-                    return axum_res;
-                },
-                Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                }
             }
         }
-        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Max iterations reached").into_response()
     }
+    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "所有可用模型均无法处理请求").into_response()
 }
+
 
 pub async fn confirm_tool_call(
     State(state): State<crate::router::AppState>,

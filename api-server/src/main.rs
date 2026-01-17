@@ -42,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
         .max_capacity(1000)
         .time_to_live(std::time::Duration::from_secs(600)) // 10分钟过期
         .build();
+    let circuit_breaker = Arc::new(lowart_core::CircuitBreaker::new(5, std::time::Duration::from_secs(30)));
     
     let state = router::AppState {
         model_manager,
@@ -50,7 +51,9 @@ async fn main() -> anyhow::Result<()> {
         agent_orchestrator,
         rate_limit_cache,
         user_cache,
+        circuit_breaker,
     };
+
 
 
 

@@ -25,7 +25,9 @@ pub struct AppState {
     pub agent_orchestrator: Arc<lowart_core::AgentOrchestrator>,
     pub rate_limit_cache: Arc<dashmap::DashMap<(String, i64), i64>>, // (user_id, minute_timestamp) -> count
     pub user_cache: moka::future::Cache<String, db::User>, // api_key -> user
+    pub circuit_breaker: Arc<lowart_core::CircuitBreaker>,
 }
+
 
 
 
