@@ -1,0 +1,12 @@
+[package]
+name = "auth"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+utils = { path = "../utils" }
+db = { path = "../db" }
+serde.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

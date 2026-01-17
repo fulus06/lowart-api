@@ -1,0 +1,37 @@
+use crate::models::User;
+use crate::connection::DbConnection;
+use utils::Result;
+
+/// 用户资源仓库
+/// 实现逻辑: 提供对 `users` 表的增删改查操作。
+pub struct UserRepo<'a> {
+    pub db: &'a DbConnection,
+}
+
+impl<'a> UserRepo<'a> {
+    pub fn new(db: &'a DbConnection) -> Self {
+        Self { db }
+    }
+
+    /// 根据 API Key 获取用户
+    pub async fn find_by_api_key(&self, api_key: &str) -> Result<Option<User>> {
+        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE api_key = ?")
+            .bind(api_key)
+            .fetch_optional(&self.db.pool)
+            .await?;
+        Ok(user)
+    }
+
+    /// 创建用户
+    pub async fn create(&self, user: User) -> Result<()> {
+        sqlx::query("INSERT INTO users (id, username, api_key, status, created_at) VALUES (?, ?, ?, ?, ?)")
+            .bind(user.id)
+            .bind(user.username)
+            .bind(user.api_key)
+            .bind(user.status)
+            .bind(user.created_at)
+            .execute(&self.db.pool)
+            .await?;
+        Ok(())
+    }
+}
