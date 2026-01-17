@@ -3,10 +3,12 @@ use axum::{
     Router,
     middleware,
 };
-use crate::handlers::{chat_completions, health_check};
+use crate::handlers;
+use crate::admin_handlers;
 use crate::auth_middleware::auth_middleware;
-use crate::stats_middleware::stats_middleware;
 use crate::limit_middleware::limit_middleware;
+use crate::admin_middleware::admin_middleware;
+use crate::stats_middleware::stats_middleware;
 
 use core::{ModelManager, RhaiEngine};
 use std::sync::Arc;
@@ -24,17 +26,27 @@ pub struct AppState {
 
 
 pub fn create_router(state: AppState) -> Router {
+    // 公开接口
+    let public_routes = Router::new()
+        .route("/health", get(handlers::health_check));
+
+    // 管理接口 (需 Auth + Admin 权限)
+    let admin_routes = Router::new()
+        .route("/users", get(admin_handlers::list_users))
+        .route("/users/quota", post(admin_handlers::update_user_quota))
+        .route("/policies", post(admin_handlers::update_tool_policy))
+        .layer(middleware::from_fn(admin_middleware));
+
+    // 标准 API 接口 (需 Auth)
+    let api_routes = Router::new()
+        .route("/chat/completions", post(handlers::chat_completions))
+        .layer(middleware::from_fn_with_state(state.clone(), limit_middleware))
+        .layer(middleware::from_fn_with_state(state.clone(), stats_middleware));
 
     Router::new()
-        .route("/health", get(health_check))
-        .route("/v1/chat/completions", post(chat_completions))
-        // 应用中间件 (通过 from_fn_with_state 注入 AppState)
-        .layer(middleware::from_fn_with_state(state.clone(), stats_middleware))
-        .layer(middleware::from_fn_with_state(state.clone(), limit_middleware))
+        .merge(public_routes)
+        .nest("/admin", admin_routes)
+        .nest("/v1", api_routes)
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
-
         .with_state(state)
 }
-
-
-

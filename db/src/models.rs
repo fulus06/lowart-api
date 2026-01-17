@@ -12,8 +12,10 @@ pub struct User {
     pub rpm_limit: i64,
     pub token_quota: i64,
     pub token_used: i64,
+    pub is_admin: bool,
     pub created_at: DateTime<Utc>,
 }
+
 
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]

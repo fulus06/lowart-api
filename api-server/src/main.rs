@@ -3,6 +3,8 @@ mod router;
 mod auth_middleware;
 mod stats_middleware;
 mod limit_middleware;
+mod admin_handlers;
+mod admin_middleware;
 
 use utils::logger;
 use db::DbConnection;

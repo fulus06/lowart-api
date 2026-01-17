@@ -23,18 +23,40 @@ impl<'a> UserRepo<'a> {
     }
 
     /// 创建用户
-    pub async fn create(&self, user: User) -> Result<()> {
-        sqlx::query("INSERT INTO users (id, username, api_key, status, rpm_limit, token_quota, token_used, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(user.id)
-            .bind(user.username)
-            .bind(user.api_key)
-            .bind(user.status)
-            .bind(user.rpm_limit)
-            .bind(user.token_quota)
-            .bind(user.token_used)
-            .bind(user.created_at)
-            .execute(&self.db.pool)
-            .await?;
+    pub async fn create(&self, user_id: &str, api_key: &str, is_admin: bool) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO users (id, api_key, is_admin, rpm_limit, token_quota, token_used) VALUES (?, ?, ?, 60, 1000000, 0)"
+        )
+        .bind(user_id)
+        .bind(api_key)
+        .bind(is_admin)
+        .execute(&self.db.pool).await?;
+        Ok(())
+    }
+
+    /// 设置管理员状态
+    pub async fn set_admin(&self, user_id: &str, is_admin: bool) -> Result<()> {
+        sqlx::query("UPDATE users SET is_admin = ? WHERE id = ?")
+            .bind(is_admin)
+            .bind(user_id)
+            .execute(&self.db.pool).await?;
+        Ok(())
+    }
+
+    /// 获取所有用户
+    pub async fn list_all(&self) -> Result<Vec<User>> {
+        let users = sqlx::query_as::<_, User>("SELECT * FROM users")
+            .fetch_all(&self.db.pool).await?;
+        Ok(users)
+    }
+
+    /// 更新用户配额
+    pub async fn update_quota(&self, user_id: &str, rpm_limit: i64, token_quota: i64) -> Result<()> {
+        sqlx::query("UPDATE users SET rpm_limit = ?, token_quota = ? WHERE id = ?")
+            .bind(rpm_limit)
+            .bind(token_quota)
+            .bind(user_id)
+            .execute(&self.db.pool).await?;
         Ok(())
     }
 
@@ -48,4 +70,3 @@ impl<'a> UserRepo<'a> {
         Ok(())
     }
 }
-
