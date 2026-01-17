@@ -10,8 +10,10 @@ pub struct RequestContext {
     pub request_format: String,      // 原始请求格式
     pub expect_response_format: String, // 期望响应格式
     pub payload: serde_json::Value,  // 统一后的 OpenAI 兼容负载
+    pub mcp_tools: Vec<protocols::mcp::McpTool>, // 注入的 MCP 工具
     pub metadata: HashMap<String, String>,
 }
+
 
 impl RequestContext {
     pub fn new(user_id: String, model_id: String, payload: serde_json::Value) -> Self {
@@ -21,7 +23,9 @@ impl RequestContext {
             request_format: "openai".to_string(),
             expect_response_format: "openai".to_string(),
             payload,
+            mcp_tools: Vec::new(),
             metadata: HashMap::new(),
         }
     }
 }
+

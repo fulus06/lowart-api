@@ -14,9 +14,13 @@ use std::sync::Arc;
 pub struct AppState {
     pub model_manager: Arc<ModelManager>,
     pub rhai_engine: Arc<RhaiEngine>,
+    pub mcp_manager: Arc<core::McpManager>,
+    pub agent_orchestrator: Arc<core::AgentOrchestrator>,
 }
 
+
 pub fn create_router(state: AppState) -> Router {
+
     Router::new()
         .route("/health", get(health_check))
         .route("/v1/chat/completions", post(chat_completions))

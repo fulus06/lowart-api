@@ -320,6 +320,7 @@ name = "core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "db",
  "models",
  "protocols",
@@ -1497,10 +1498,12 @@ name = "protocols"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "futures",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "utils",
 ]
 

@@ -23,11 +23,17 @@ async fn main() -> anyhow::Result<()> {
     // 3. 初始化核心组件
     let model_manager = Arc::new(core::ModelManager::new(Arc::clone(&db)));
     let rhai_engine = Arc::new(core::RhaiEngine::new());
+    let mcp_manager = Arc::new(core::McpManager::new());
+    let agent_orchestrator = Arc::new(core::AgentOrchestrator::new());
     
     let state = router::AppState {
         model_manager,
         rhai_engine,
+        mcp_manager,
+        agent_orchestrator,
     };
+
+
 
     // 4. 构建路由
     let app = router::create_router(state);
