@@ -6,6 +6,8 @@ use axum::{
 use crate::handlers::{chat_completions, health_check};
 use crate::auth_middleware::auth_middleware;
 use crate::stats_middleware::stats_middleware;
+use crate::limit_middleware::limit_middleware;
+
 use core::{ModelManager, RhaiEngine};
 use std::sync::Arc;
 
@@ -16,7 +18,9 @@ pub struct AppState {
     pub rhai_engine: Arc<RhaiEngine>,
     pub mcp_manager: Arc<core::McpManager>,
     pub agent_orchestrator: Arc<core::AgentOrchestrator>,
+    pub rate_limit_cache: Arc<dashmap::DashMap<(String, i64), i64>>, // (user_id, minute_timestamp) -> count
 }
+
 
 
 pub fn create_router(state: AppState) -> Router {
@@ -26,7 +30,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         // 应用中间件 (通过 from_fn_with_state 注入 AppState)
         .layer(middleware::from_fn_with_state(state.clone(), stats_middleware))
+        .layer(middleware::from_fn_with_state(state.clone(), limit_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+
         .with_state(state)
 }
 

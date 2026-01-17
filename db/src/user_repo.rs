@@ -24,14 +24,28 @@ impl<'a> UserRepo<'a> {
 
     /// 创建用户
     pub async fn create(&self, user: User) -> Result<()> {
-        sqlx::query("INSERT INTO users (id, username, api_key, status, created_at) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO users (id, username, api_key, status, rpm_limit, token_quota, token_used, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(user.id)
             .bind(user.username)
             .bind(user.api_key)
             .bind(user.status)
+            .bind(user.rpm_limit)
+            .bind(user.token_quota)
+            .bind(user.token_used)
             .bind(user.created_at)
             .execute(&self.db.pool)
             .await?;
         Ok(())
     }
+
+    /// 增加用户 Token 使用量
+    pub async fn increment_token_usage(&self, user_id: &str, amount: i64) -> Result<()> {
+        sqlx::query("UPDATE users SET token_used = token_used + ? WHERE id = ?")
+            .bind(amount)
+            .bind(user_id)
+            .execute(&self.db.pool)
+            .await?;
+        Ok(())
+    }
 }
+

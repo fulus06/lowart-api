@@ -1,4 +1,6 @@
-use axum::{Json, response::IntoResponse, extract::State};
+use axum::{Json, response::IntoResponse, extract::State, Extension};
+
+
 use serde_json::{Value, json};
 
 
@@ -15,6 +17,7 @@ use crate::router::AppState;
 /// 支持“流式输出”：如果请求中包含 `stream: true`，则返回 SSE。
 pub async fn chat_completions(
     State(state): State<AppState>,
+    Extension(user): Extension<db::User>,
     Json(payload): Json<Value>
 ) -> impl IntoResponse {
     let model_manager = &state.model_manager;
@@ -67,6 +70,7 @@ pub async fn chat_completions(
         }
     }
 
+
     // 3. 判断是否为流式请求
     let is_stream = final_payload.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
 
@@ -85,22 +89,72 @@ pub async fn chat_completions(
             Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     } else {
-        match model.chat_completions(final_payload).await {
+        match model.chat_completions(final_payload.clone()).await {
             Ok(res) => {
                 // 4. 执行响应转换 (如果配置了脚本)
-                let mut final_res = res;
+                let mut final_res = res.clone();
                 if let Some(script) = res_script {
                     match rhai_engine.transform(&script, final_res) {
                         Ok(new_res) => final_res = new_res,
                         Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("响应转换失败: {}", e)).into_response(),
                     }
                 }
+
+                // 5. 计费逻辑 (非流式)
+                let db = state.model_manager.db();
+                let model_id_str = model_id.to_string();
+                let payload_clone = final_payload.clone();
+                let res_clone = res.clone();
+                
+                tokio::spawn(async move {
+                    use core::TokenCounter;
+                    // 计算请求 Token (简单处理消息列表)
+                    let req_tokens = if let Some(msgs) = payload_clone.get("messages") {
+                        TokenCounter::count_messages_tokens(msgs)
+                    } else {
+                        0
+                    };
+                    
+                    // 计算响应 Token
+                    let res_tokens = if let Some(choices) = res_clone.get("choices").and_then(|v| v.as_array()) {
+                       if let Some(content) = choices.get(0).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|t| t.as_str()) {
+                           TokenCounter::count_tokens(content)
+                       } else {
+                           0
+                       }
+                    } else {
+                        0
+                    };
+
+                    let total = req_tokens + res_tokens;
+                    if total > 0 {
+                        let user_repo = db::UserRepo::new(&db);
+                        let _ = user_repo.increment_token_usage(&user.id, total as i64).await;
+                    }
+
+                    // 记录详细统计
+                    let stats_repo = db::StatsRepo::new(&db);
+                    let _ = stats_repo.record(db::UsageStat {
+                        id: 0,
+                        user_id: user.id,
+                        model_id: model_id_str,
+                        request_tokens: req_tokens as i64,
+                        response_tokens: res_tokens as i64,
+                        request_count: 1,
+                        response_count: 1,
+                        duration_ms: 0, // 这里的时长可以后续优化
+                        timestamp: chrono::Utc::now(),
+                    }).await;
+                });
+
                 Json(final_res).into_response()
             },
             Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     }
 }
+
+
 
 pub async fn health_check() -> impl IntoResponse {
     Json(json!({"status": "ok"}))

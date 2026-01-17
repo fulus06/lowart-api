@@ -44,5 +44,7 @@ uuid = { version = "1.8", features = ["v4", "serde"] }
 aes-gcm = "0.10"
 base64 = "0.22"
 getrandom = "0.2"
+dashmap = "6.0"
+
 
 

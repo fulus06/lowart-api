@@ -24,9 +24,14 @@ pub async fn auth_middleware(
         Some(api_key) => {
             let manager = AuthManager::new(state.model_manager.db()); // 假设 ModelManager 暴露了 db()
             match manager.authenticate(api_key).await {
-                Ok(_user) => Ok(next.run(req).await),
+                Ok(user) => {
+                    let mut req = req;
+                    req.extensions_mut().insert(user);
+                    Ok(next.run(req).await)
+                }
                 Err(_) => Err(StatusCode::UNAUTHORIZED),
             }
+
         }
         None => Err(StatusCode::UNAUTHORIZED),
     }

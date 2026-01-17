@@ -2,14 +2,19 @@ use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
 
 
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+
 pub struct User {
     pub id: String,
     pub username: String,
     pub api_key: String,
     pub status: String,
+    pub rpm_limit: i64,
+    pub token_quota: i64,
+    pub token_used: i64,
     pub created_at: DateTime<Utc>,
 }
+
 
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ModelConfig {

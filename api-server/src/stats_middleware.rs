@@ -18,7 +18,8 @@ pub async fn stats_middleware(
     next: Next,
 ) -> Response {
     let start = Instant::now();
-    
+    let user_id = req.extensions().get::<db::User>().map(|u| u.id.clone()).unwrap_or_else(|| "system".to_string());
+
     // 处理请求
     let response = next.run(req).await;
     
@@ -30,8 +31,8 @@ pub async fn stats_middleware(
         let repo = StatsRepo::new(&db);
         let stat = UsageStat {
             id: 0, // 自动递增
-            user_id: "system".to_string(), // 实际应从 extensions 获取
-            model_id: "unknown".to_string(), // 实际应从上下文获取
+            user_id,
+            model_id: "unknown".to_string(), // 后续可从 extensions 获取
             request_tokens: 0,
             response_tokens: 0,
             request_count: 1,
@@ -46,4 +47,3 @@ pub async fn stats_middleware(
     
     response
 }
-

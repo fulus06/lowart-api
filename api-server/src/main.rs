@@ -2,6 +2,7 @@ mod handlers;
 mod router;
 mod auth_middleware;
 mod stats_middleware;
+mod limit_middleware;
 
 use utils::logger;
 use db::DbConnection;
@@ -25,13 +26,16 @@ async fn main() -> anyhow::Result<()> {
     let rhai_engine = Arc::new(core::RhaiEngine::new());
     let mcp_manager = Arc::new(core::McpManager::new());
     let agent_orchestrator = Arc::new(core::AgentOrchestrator::new());
+    let rate_limit_cache = Arc::new(dashmap::DashMap::new());
     
     let state = router::AppState {
         model_manager,
         rhai_engine,
         mcp_manager,
         agent_orchestrator,
+        rate_limit_cache,
     };
+
 
 
 
