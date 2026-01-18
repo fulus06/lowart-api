@@ -1,7 +1,7 @@
 use axum::{Json, response::IntoResponse, extract::{State, Extension}};
 use serde_json::json;
 use crate::router::AppState;
-use db::{UserRepo, ToolPolicyRepo, ConfigRepo, StatsRepo, models::User};
+use db::{UserRepo, ToolPolicyRepo, ConfigRepo, StatsRepo, models::User, models::ModelConfig};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -53,6 +53,34 @@ pub struct UpdateUserRequest {
 #[derive(Deserialize)]
 pub struct DeleteUserRequest {
     pub user_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateModelRequest {
+    pub title: String,
+    pub model_id: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub vendor_type: String,
+    pub cost_per_1k_tokens: i64,
+    pub is_active: bool,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateModelRequest {
+    pub id: String,
+    pub title: String,
+    pub model_id: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub vendor_type: String,
+    pub cost_per_1k_tokens: i64,
+    pub is_active: bool,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteModelRequest {
+    pub id: String,
 }
 
 
@@ -240,6 +268,85 @@ pub async fn delete_user(
     let user_repo = UserRepo::new(&db);
     match user_repo.delete(&payload.user_id).await {
         Ok(_) => Json(json!({"status": "success"})).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 创建新模型配置
+pub async fn create_model(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateModelRequest>
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let config_repo = ConfigRepo::new(&db);
+    
+    let config = ModelConfig {
+        id: uuid::Uuid::new_v4().to_string(),
+        title: payload.title,
+        model_id: payload.model_id,
+        api_key: payload.api_key,
+        base_url: payload.base_url,
+        vendor_type: payload.vendor_type,
+        cost_per_1k_tokens: payload.cost_per_1k_tokens,
+        request_script: None,
+        response_script: None,
+        is_active: payload.is_active,
+        created_at: chrono::Utc::now(),
+    };
+
+    match config_repo.create(&config).await {
+        Ok(_) => {
+            state.model_manager.clear_cache().await;
+            Json(json!({"status": "success", "id": config.id})).into_response()
+        },
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 更新模型配置
+pub async fn update_model(
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateModelRequest>
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let config_repo = ConfigRepo::new(&db);
+    
+    let config = ModelConfig {
+        id: payload.id,
+        title: payload.title,
+        model_id: payload.model_id,
+        api_key: payload.api_key,
+        base_url: payload.base_url,
+        vendor_type: payload.vendor_type,
+        cost_per_1k_tokens: payload.cost_per_1k_tokens,
+        request_script: None,
+        response_script: None,
+        is_active: payload.is_active,
+        created_at: chrono::Utc::now(), // In a real app, we might want to keep the original created_at
+    };
+
+    match config_repo.update(&config).await {
+        Ok(_) => {
+            state.model_manager.clear_cache().await;
+            Json(json!({"status": "success"})).into_response()
+        },
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 删除模型配置
+pub async fn delete_model(
+    State(state): State<AppState>,
+    Json(payload): Json<DeleteModelRequest>
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let config_repo = ConfigRepo::new(&db);
+    
+    match config_repo.delete(&payload.id).await {
+        Ok(_) => {
+            state.model_manager.clear_cache().await;
+            Json(json!({"status": "success"})).into_response()
+        },
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

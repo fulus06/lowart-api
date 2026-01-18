@@ -52,7 +52,12 @@ pub fn create_router(state: AppState, metrics_handle: PrometheusHandle) -> Route
             .delete(admin_handlers::delete_user)
         )
         .route("/users/quota", post(admin_handlers::update_user_quota))
-        .route("/models", get(admin_handlers::list_models))
+        .route("/models", 
+            get(admin_handlers::list_models)
+            .post(admin_handlers::create_model)
+            .put(admin_handlers::update_model)
+            .delete(admin_handlers::delete_model)
+        )
         .route("/stats", get(admin_handlers::list_stats))
         .route("/policies", post(admin_handlers::update_tool_policy))
         .route("/mcp/register", post(admin_handlers::register_mcp))

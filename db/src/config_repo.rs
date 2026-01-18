@@ -54,5 +54,30 @@ impl<'a> ConfigRepo<'a> {
         .execute(&self.db.pool).await?;
         Ok(())
     }
+
+    /// 更新模型配置
+    pub async fn update(&self, config: &ModelConfig) -> Result<()> {
+        sqlx::query(
+            "UPDATE model_configs SET title = ?, model_id = ?, api_key = ?, base_url = ?, vendor_type = ?, cost_per_1k_tokens = ?, is_active = ? WHERE id = ?"
+        )
+        .bind(&config.title)
+        .bind(&config.model_id)
+        .bind(&config.api_key)
+        .bind(&config.base_url)
+        .bind(&config.vendor_type)
+        .bind(config.cost_per_1k_tokens)
+        .bind(config.is_active)
+        .bind(&config.id)
+        .execute(&self.db.pool).await?;
+        Ok(())
+    }
+
+    /// 删除模型配置
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM model_configs WHERE id = ?")
+            .bind(id)
+            .execute(&self.db.pool).await?;
+        Ok(())
+    }
 }
 

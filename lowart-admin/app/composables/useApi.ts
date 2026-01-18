@@ -43,6 +43,18 @@ export const useApi = () => {
 
         // Model APIs
         getModels: () => fetchWithAuth('/admin/models'),
+        createModel: (payload: { title: string, model_id: string, api_key: string, base_url: string, vendor_type: string, cost_per_1k_tokens: number, is_active: boolean }) => fetchWithAuth('/admin/models', {
+            method: 'POST',
+            body: payload
+        }),
+        updateModel: (payload: { id: string, title: string, model_id: string, api_key: string, base_url: string, vendor_type: string, cost_per_1k_tokens: number, is_active: boolean }) => fetchWithAuth('/admin/models', {
+            method: 'PUT',
+            body: payload
+        }),
+        deleteModel: (id: string) => fetchWithAuth('/admin/models', {
+            method: 'DELETE',
+            body: { id }
+        }),
         registerMcp: (payload: { name: string, command: string, args: string[] }) => fetchWithAuth('/admin/mcp/register', {
             method: 'POST',
             body: payload
