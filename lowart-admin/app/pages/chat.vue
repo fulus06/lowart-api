@@ -34,7 +34,10 @@
           <div class="message glass">
             <div class="avatar">{{ msg.role[0].toUpperCase() }}</div>
             <div class="content">
-              <div class="role-label">{{ msg.role === 'user' ? 'You' : 'Assistant' }}</div>
+              <div class="role-label">
+                {{ msg.role === 'user' ? 'You' : 'Assistant' }}
+                <span v-if="msg.latency" class="latency-badge">{{ msg.latency }}ms</span>
+              </div>
               <div class="text">{{ msg.content }}</div>
             </div>
           </div>
@@ -98,6 +101,7 @@ onMounted(loadModels)
 const sendMessage = async () => {
   if (!userInput.value || !config.model || isTyping.value) return
 
+  const startTime = Date.now()
   const userMsg = userInput.value
   messages.value.push({ role: 'user', content: userMsg })
   userInput.value = ''
@@ -150,7 +154,9 @@ const sendMessage = async () => {
             try {
               let parsed = JSON.parse(dataStr)
               if (!firstParseLogged) {
-                console.log(`[SSE] 第一次成功解析 JSON, 时间: ${new Date().toISOString()}`)
+                const latency = Date.now() - startTime
+                messages.value[lastMsgIndex].latency = latency
+                console.log(`[SSE] 第一次成功解析 JSON, 耗时: ${latency}ms`)
                 firstParseLogged = true
               }
               
@@ -205,9 +211,13 @@ const sendMessage = async () => {
         stream: false,
         temperature: config.temperature
       })
-
+      
       const assistantMsg = response.choices[0].message.content
-      messages.value.push({ role: 'assistant', content: assistantMsg })
+      messages.value.push({ 
+        role: 'assistant', 
+        content: assistantMsg,
+        latency: Date.now() - startTime
+      })
     }
   } catch (e) {
     console.error('Chat error:', e)
@@ -336,6 +346,21 @@ const clearChat = () => {
   font-weight: 700;
   margin-bottom: 0.25rem;
   opacity: 0.7;
+}
+
+.latency-badge {
+  font-size: 0.6875rem;
+  font-weight: 400;
+  padding: 1px 6px;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  margin-left: 0.5rem;
+  color: var(--accent-primary);
+}
+
+.message-wrapper.user .latency-badge {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
 }
 
 .text {
