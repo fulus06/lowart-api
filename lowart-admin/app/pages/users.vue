@@ -38,10 +38,16 @@
             <td>
               <div class="key-cell">
                 <code>{{ showKeys[user.id] ? user.api_key : '••••••••••••' }}</code>
-                <button @click="toggleKey(user.id)">
-                  <Eye v-if="!showKeys[user.id]" :size="14" />
-                  <EyeOff v-else :size="14" />
-                </button>
+                <div class="key-actions">
+                  <button title="查看/隐藏" @click="toggleKey(user.id)">
+                    <Eye v-if="!showKeys[user.id]" :size="14" />
+                    <EyeOff v-else :size="14" />
+                  </button>
+                  <button title="复制 Key" @click="copyToClipboard(user.api_key, user.id)">
+                    <Check v-if="copiedId === user.id" :size="14" class="text-success" />
+                    <Copy v-else :size="14" />
+                  </button>
+                </div>
               </div>
             </td>
             <td>
@@ -150,7 +156,9 @@ import {
   EyeOff, 
   Settings2, 
   UserCog,
-  Trash2
+  Trash2,
+  Copy,
+  Check
 } from 'lucide-vue-next'
 
 const searchQuery = ref('')
@@ -180,6 +188,7 @@ const quotaForm = reactive({
 const { getUsers, updateQuota, createUser, updateUser, deleteUser } = useApi()
 const authStore = useAuthStore()
 const users = ref([])
+const copiedId = ref(null)
 
 const loadUsers = async () => {
   isLoading.value = true
@@ -204,6 +213,18 @@ const filteredUsers = computed(() => {
 
 const toggleKey = (id) => {
   showKeys[id] = !showKeys[id]
+}
+
+const copyToClipboard = async (text, id) => {
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedId.value = id
+    setTimeout(() => {
+      if (copiedId.value === id) copiedId.value = null
+    }, 2000)
+  } catch (err) {
+    console.error('Failed to copy keys:', err)
+  }
 }
 
 const generateKey = () => {
@@ -409,6 +430,15 @@ const saveQuota = async () => {
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-family: monospace;
+}
+
+.key-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.text-success {
+  color: var(--success);
 }
 
 .status-tag {
