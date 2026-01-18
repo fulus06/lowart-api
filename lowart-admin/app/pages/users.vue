@@ -178,6 +178,7 @@ const quotaForm = reactive({
 })
 
 const { getUsers, updateQuota, createUser, updateUser, deleteUser } = useApi()
+const authStore = useAuthStore()
 const users = ref([])
 
 const loadUsers = async () => {
