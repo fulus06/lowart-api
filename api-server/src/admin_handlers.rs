@@ -1,7 +1,7 @@
 use axum::{Json, response::IntoResponse, extract::State};
 use serde_json::json;
 use crate::router::AppState;
-use db::{UserRepo, ToolPolicyRepo};
+use db::{UserRepo, ToolPolicyRepo, ConfigRepo, StatsRepo};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -108,3 +108,22 @@ pub async fn unregister_mcp(
     Json(json!({"status": "success"})).into_response()
 }
 
+/// 获取所有模型列表
+pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let config_repo = ConfigRepo::new(&db);
+    match config_repo.list_all().await {
+        Ok(configs) => Json(configs).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 获取最近调用日志
+pub async fn list_stats(State(state): State<AppState>) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let stats_repo = StatsRepo::new(&db);
+    match stats_repo.list_recent(100).await {
+        Ok(stats) => Json(stats).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}

@@ -46,4 +46,13 @@ impl<'a> StatsRepo<'a> {
         .await?;
         Ok(())
     }
+
+    /// 获取最近的使用记录
+    pub async fn list_recent(&self, limit: i64) -> Result<Vec<UsageStat>> {
+        let stats = sqlx::query_as::<_, UsageStat>("SELECT * FROM usage_stats ORDER BY timestamp DESC LIMIT ?")
+            .bind(limit)
+            .fetch_all(&self.db.pool)
+            .await?;
+        Ok(stats)
+    }
 }

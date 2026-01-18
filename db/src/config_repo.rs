@@ -20,6 +20,14 @@ impl<'a> ConfigRepo<'a> {
         Ok(configs)
     }
 
+    /// 获取所有模型配置 (包含非激活)
+    pub async fn list_all(&self) -> Result<Vec<ModelConfig>> {
+        let configs = sqlx::query_as::<_, ModelConfig>("SELECT * FROM model_configs")
+            .fetch_all(&self.db.pool)
+            .await?;
+        Ok(configs)
+    }
+
     /// 根据 model_id 获取配置
     pub async fn find_by_model_id(&self, model_id: &str) -> Result<Option<ModelConfig>> {
         let config = sqlx::query_as::<_, ModelConfig>("SELECT * FROM model_configs WHERE model_id = ? AND is_active = 1")

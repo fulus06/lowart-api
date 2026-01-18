@@ -11,6 +11,8 @@ use crate::admin_middleware::admin_middleware;
 use crate::stats_middleware::stats_middleware;
 use crate::metrics_middleware::metrics_middleware;
 use metrics_exporter_prometheus::PrometheusHandle;
+use tower_http::cors::{CorsLayer, Any};
+use axum::http::Method;
 
 use lowart_core::{ModelManager, RhaiEngine};
 use std::sync::Arc;
@@ -44,6 +46,8 @@ pub fn create_router(state: AppState, metrics_handle: PrometheusHandle) -> Route
     let admin_routes = Router::new()
         .route("/users", get(admin_handlers::list_users))
         .route("/users/quota", post(admin_handlers::update_user_quota))
+        .route("/models", get(admin_handlers::list_models))
+        .route("/stats", get(admin_handlers::list_stats))
         .route("/policies", post(admin_handlers::update_tool_policy))
         .route("/mcp/register", post(admin_handlers::register_mcp))
         .route("/mcp/unregister", post(admin_handlers::unregister_mcp))
@@ -59,10 +63,16 @@ pub fn create_router(state: AppState, metrics_handle: PrometheusHandle) -> Route
         .layer(middleware::from_fn_with_state(state.clone(), limit_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), stats_middleware));
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers(Any);
+
     Router::new()
         .merge(public_routes)
         .nest("/admin", admin_routes)
         .nest("/v1", api_routes)
+        .layer(cors) // 添加 CORS 层
         .layer(middleware::from_fn_with_state(state.clone(), metrics_middleware)) // 指标记录优先
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state)
