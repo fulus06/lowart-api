@@ -34,6 +34,7 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(val))) => {
+                tracing::info!("[Stream] 接收到厂商原始分片, 时间: {:?}", chrono::Utc::now());
                 if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
                     if let Some(delta) = choices.get(0).and_then(|c| c.get("delta")) {
                         if let Some(content) = delta.get("content").and_then(|t| t.as_str()) {
@@ -41,6 +42,7 @@ where
                         }
                     }
                 }
+                tracing::info!("[Stream] 准备向前端转发 SSE, 时间: {:?}", chrono::Utc::now());
                 Poll::Ready(Some(Ok(Event::default().data(val.to_string()))))
             }
             Poll::Ready(Some(Err(e))) => {

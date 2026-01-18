@@ -4,18 +4,25 @@ export const useApi = () => {
     const baseUrl = 'http://localhost:8080'
     const adminKey = computed(() => authStore.adminKey)
 
+    const getAuthHeaders = () => ({
+        'Authorization': `Bearer ${adminKey.value}`,
+        'Content-Type': 'application/json'
+    })
+
     const fetchWithAuth = async (url: string, options: any = {}) => {
         return await $fetch(url, {
             baseURL: baseUrl,
             ...options,
             headers: {
-                'Authorization': `Bearer ${adminKey.value}`,
+                ...getAuthHeaders(),
                 ...options.headers,
             }
         })
     }
 
     return {
+        baseUrl,
+        getAuthHeaders,
         // Auth API
         login: (api_key: string) => $fetch(`${baseUrl}/admin/login`, {
             method: 'POST',

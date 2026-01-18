@@ -19,6 +19,7 @@
         </div>
         <div class="setting-row">
           <span>Temperature</span>
+          <span>({{ Number(config.temperature).toFixed(1) }}): </span>
           <input v-model="config.temperature" type="range" min="0" max="2" step="0.1" />
         </div>
       </div>
@@ -63,14 +64,14 @@
 <script setup>
 import { Send, RotateCcw } from 'lucide-vue-next'
 
-const { getModels, chat } = useApi()
+const { getModels, chat, baseUrl, getAuthHeaders } = useApi()
 const models = ref([])
 const messageList = ref(null)
 
 const config = reactive({
   model: '',
   system: '',
-  stream: false,
+  stream: true, // Default to true for better experience
   temperature: 0.7
 })
 
@@ -107,19 +108,107 @@ const sendMessage = async () => {
     if (messageList.value) messageList.value.scrollTop = messageList.value.scrollHeight
   })
 
-  try {
-    const response = await chat({
-      model: config.model,
-      messages: [
-        ...(config.system ? [{ role: 'system', content: config.system }] : []),
-        ...messages.value.map(m => ({ role: m.role, content: m.content }))
-      ],
-      stream: false,
-      temperature: config.temperature
-    })
+  const payloadMessages = [
+    ...(config.system ? [{ role: 'system', content: config.system }] : []),
+    ...messages.value.map(m => ({ role: m.role, content: m.content }))
+  ]
 
-    const assistantMsg = response.choices[0].message.content
-    messages.value.push({ role: 'assistant', content: assistantMsg })
+  try {
+    if (config.stream) {
+      // Stream output mode (SSE)
+      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          model: config.model,
+          messages: payloadMessages,
+          stream: true,
+          temperature: config.temperature
+        })
+      })
+
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`)
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      messages.value.push({ role: 'assistant', content: '' })
+      const lastMsgIndex = messages.value.length - 1
+      isTyping.value = false // Assistant start answering
+
+      let buffer = ''
+      let firstParseLogged = false
+      const processLines = (lineStr) => {
+        const lines = lineStr.split(/\r?\n/)
+        for (let i = 0; i < lines.length - 1; i++) {
+          const line = lines[i].trim()
+          if (!line) continue
+          
+          if (line.startsWith('data: ')) {
+            let dataStr = line.slice(5).trim()
+            if (dataStr === '[DONE]') break
+            
+            try {
+              let parsed = JSON.parse(dataStr)
+              if (!firstParseLogged) {
+                console.log(`[SSE] 第一次成功解析 JSON, 时间: ${new Date().toISOString()}`)
+                firstParseLogged = true
+              }
+              
+              // Handle nested "raw" field if present (backend adapter double-wrap)
+              if (parsed.raw && typeof parsed.raw === 'string') {
+                const subLines = parsed.raw.split('\n')
+                for (const subLine of subLines) {
+                  const trimmedSub = subLine.trim()
+                  if (trimmedSub.startsWith('data: ')) {
+                    const subData = trimmedSub.slice(5).trim()
+                    if (subData !== '[DONE]') {
+                      try {
+                        const subParsed = JSON.parse(subData)
+                        const content = subParsed.choices?.[0]?.delta?.content || ''
+                        messages.value[lastMsgIndex].content += content
+                      } catch (e) {}
+                    }
+                  }
+                }
+              } else {
+                // Standard OpenAI format
+                const content = parsed.choices?.[0]?.delta?.content || ''
+                messages.value[lastMsgIndex].content += content
+              }
+              
+              nextTick(() => {
+                if (messageList.value) messageList.value.scrollTop = messageList.value.scrollHeight
+              })
+            } catch (e) {
+              // Ignore partial JSON
+            }
+          }
+        }
+        return lines[lines.length - 1]
+      }
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          if (buffer) processLines(buffer + '\n')
+          break
+        }
+        
+        buffer += decoder.decode(value, { stream: true })
+        buffer = processLines(buffer)
+      }
+    } else {
+      // Normal JSON mode
+      const response = await chat({
+        model: config.model,
+        messages: payloadMessages,
+        stream: false,
+        temperature: config.temperature
+      })
+
+      const assistantMsg = response.choices[0].message.content
+      messages.value.push({ role: 'assistant', content: assistantMsg })
+    }
   } catch (e) {
     console.error('Chat error:', e)
     messages.value.push({ role: 'assistant', content: `[错误] 无法获取模型响应: ${e.message}` })
