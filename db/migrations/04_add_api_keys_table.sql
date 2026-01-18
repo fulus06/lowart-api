@@ -1,5 +1,5 @@
 -- 创建 API Key 表
-CREATE TABLE api_keys (
+CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     api_key TEXT NOT NULL UNIQUE,
@@ -7,7 +7,8 @@ CREATE TABLE api_keys (
     status TEXT NOT NULL DEFAULT 'Active',
     last_used_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, label)
 );
 
 -- 数据迁移：将 users 表中现有的 api_key 移动到新表，作为 "Default" Key

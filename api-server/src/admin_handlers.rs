@@ -205,8 +205,10 @@ pub async fn login(
     let db = state.model_manager.db();
     let user_repo = UserRepo::new(&db);
     
+    tracing::debug!("尝试登录 API Key: {}", payload.api_key);
     match user_repo.find_by_api_key(&payload.api_key).await {
         Ok(Some(user)) => {
+            tracing::debug!("找到用户: {}, is_admin: {}, status: {}", user.username, user.is_admin, user.status);
             if user.is_admin {
                 Json(json!({
                     "status": "success",

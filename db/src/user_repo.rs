@@ -23,11 +23,19 @@ impl<'a> UserRepo<'a> {
         .bind(api_key)
         .fetch_optional(&self.db.pool)
         .await?;
+        
+        if user.is_none() {
+            tracing::debug!("未在 api_keys 表中找到有效的 Key: {}", api_key);
+        }
+        
         Ok(user)
     }
 
     /// 创建用户
     pub async fn create(&self, user_id: &str, username: &str, api_key: &str, is_admin: bool) -> Result<()> {
+        let mut tx = self.db.pool.begin().await?;
+
+        // 1. 插入用户表
         sqlx::query(
             "INSERT INTO users (id, username, api_key, status, is_admin, rpm_limit, token_quota, token_used) VALUES (?, ?, ?, 'Active', ?, 60, 1000000, 0)"
         )
@@ -35,7 +43,17 @@ impl<'a> UserRepo<'a> {
         .bind(username)
         .bind(api_key)
         .bind(is_admin)
-        .execute(&self.db.pool).await?;
+        .execute(&mut *tx).await?;
+
+        // 2. 同步插入 api_keys 表
+        sqlx::query(
+            "INSERT INTO api_keys (user_id, api_key, label, status) VALUES (?, ?, 'Default', 'Active')"
+        )
+        .bind(user_id)
+        .bind(api_key)
+        .execute(&mut *tx).await?;
+
+        tx.commit().await?;
         Ok(())
     }
 
@@ -84,14 +102,30 @@ impl<'a> UserRepo<'a> {
         Ok(())
     }
 
-    /// 更新用户信息
+    /// 更新用户信息 (用户名、API Key、状态)
     pub async fn update_info(&self, user_id: &str, username: &str, api_key: &str, status: &str) -> Result<()> {
+        let mut tx = self.db.pool.begin().await?;
+
+        // 1. 更新用户表
         sqlx::query("UPDATE users SET username = ?, api_key = ?, status = ? WHERE id = ?")
             .bind(username)
             .bind(api_key)
             .bind(status)
             .bind(user_id)
-            .execute(&self.db.pool).await?;
+            .execute(&mut *tx).await?;
+
+        // 2. 同步更新/重置 api_keys 表中的 Default Key (如果存在)
+        // 注意：这里简单处理，如果 api_key 变化了，且它是 "Default" 标签，则更新它。
+        // 或者直接尝试 upsert 一个 Default key。
+        sqlx::query(
+            "INSERT INTO api_keys (user_id, api_key, label, status) VALUES (?, ?, 'Default', 'Active')
+             ON CONFLICT(user_id, label) DO UPDATE SET api_key = excluded.api_key, status = excluded.status"
+        )
+        .bind(user_id)
+        .bind(api_key)
+        .execute(&mut *tx).await?;
+
+        tx.commit().await?;
         Ok(())
     }
 
