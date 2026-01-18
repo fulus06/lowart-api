@@ -14,7 +14,7 @@ use db::{DbConnection, UserRepo, ConfigRepo, FallbackRepo};
 
 async fn setup_test_app() -> (axum::Router, Arc<DbConnection>) {
     // 1. 设置测试数据库 (使用临时文件)
-    let db_path = format!("test_{}.db", uuid::Uuid::new_v4());
+    let db_path = format!("tests/ignore/test_{}.db", uuid::Uuid::new_v4());
     let db_url = format!("sqlite:{}?mode=rwc", db_path);
     
     let db = DbConnection::new_with_url(&db_url).await.expect("Failed to create test DB");
