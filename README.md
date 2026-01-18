@@ -78,6 +78,8 @@ The project is structured as a modular Cargo workspace:
    ```bash
    # Standard HTTP mode
    cargo run -p api-server
+   # print debug log
+   RUST_LOG=debug cargo run -p api-server
 
    # High-performance UDS mode
    LISTEN_MODE=UDS cargo run -p api-server

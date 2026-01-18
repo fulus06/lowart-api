@@ -78,6 +78,8 @@ Lowart-api 是一个基于 Rust 开发的轻量级、企业级 AI API 网关。�
    ```bash
    # 标准 HTTP 模式
    cargo run -p api-server
+   # 查看详细日志
+   RUST_LOG=debug cargo run -p api-server
 
    # 高性能 UDS 模式
    LISTEN_MODE=UDS cargo run -p api-server
