@@ -38,7 +38,8 @@
                 {{ msg.role === 'user' ? 'You' : 'Assistant' }}
                 <span v-if="msg.latency" class="latency-badge">{{ msg.latency }}ms</span>
               </div>
-              <div class="text">{{ msg.content }}</div>
+              <div v-if="msg.role === 'assistant'" class="text markdown-body" v-html="mdRender(msg.content)"></div>
+              <div v-else class="text">{{ msg.content }}</div>
             </div>
           </div>
         </div>
@@ -68,6 +69,7 @@
 import { Send, RotateCcw } from 'lucide-vue-next'
 
 const { getModels, chat, baseUrl, getAuthHeaders } = useApi()
+const { render: mdRender } = useMarkdown()
 const models = ref([])
 const messageList = ref(null)
 
@@ -366,6 +368,102 @@ const clearChat = () => {
 .text {
   font-size: 0.9375rem;
   line-height: 1.6;
+}
+
+/* Markdown Styles */
+.markdown-body {
+  color: inherit;
+  font-family: inherit;
+}
+
+.markdown-body p {
+  margin-bottom: 1rem;
+}
+
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+  margin: 1.5rem 0 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.markdown-body code {
+  padding: 0.2em 0.4em;
+  margin: 0;
+  font-size: 85%;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+}
+
+.markdown-body pre {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  overflow: auto;
+  font-size: 85%;
+  line-height: 1.45;
+  background-color: #0d1117;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.markdown-body pre code {
+  padding: 0;
+  margin: 0;
+  background-color: transparent;
+  border: 0;
+  display: block;
+  word-wrap: normal;
+  color: #e6edf3;
+  font-size: 0.875rem;
+}
+
+.markdown-body ul, .markdown-body ol {
+  margin-bottom: 1rem;
+  padding-left: 2rem;
+}
+
+.markdown-body li {
+  margin-bottom: 0.25rem;
+}
+
+.markdown-body blockquote {
+  padding: 0 1rem;
+  color: #6a737d;
+  border-left: 0.25em solid #dfe2e5;
+  margin-bottom: 1rem;
+}
+
+.markdown-body table {
+  display: block;
+  width: 100%;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto;
+  margin-bottom: 1rem;
+  border-spacing: 0;
+  border-collapse: collapse;
+}
+
+.markdown-body table th, .markdown-body table td {
+  padding: 6px 13px;
+  border: 1px solid #dfe2e5;
+}
+
+.markdown-body table tr {
+  background-color: transparent;
+  border-top: 1px solid #c6cbd1;
+}
+
+.markdown-body table tr:nth-child(2n) {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.message-wrapper.user .markdown-body code {
+  background-color: rgba(255, 255, 255, 0.2);
 }
 
 .input-area {
