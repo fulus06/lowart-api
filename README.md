@@ -97,7 +97,23 @@ The project is structured as a modular Cargo workspace:
 Access `http://localhost:3000/metrics` for real-time Prometheus data:
 - `http_requests_total`: Total request count.
 - `gateway_tokens_total`: Token throughput per model.
-- `http_request_duration_seconds`: Response latency distribution.
+- `http_request_duration_seconds`: Response latency distribution distribution.
+
+## 🖥 Web Administrative UI (Admin UI)
+We provide a modern management console built with Nuxt.js, located in the `lowart-admin` directory:
+- **Features**: Visual user management, model configuration, real-time monitoring, and online chat testing.
+- **Getting Started**:
+  ```bash
+  cd lowart-admin
+  # Install dependencies on first run
+  npm install
+  # Start the development server
+  npm run dev
+  ```
+- **Access**: The default address is `http://localhost:3000`.
+
+## 📑 User Tutorial
+Want to learn more about user management, model configuration, and API calling details? Please read the [User Tutorial](./docs/tutorial.md).
 
 ## 📝 License
 Apache 2.0 License

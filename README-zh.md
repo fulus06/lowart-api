@@ -99,5 +99,21 @@ Lowart-api 是一个基于 Rust 开发的轻量级、企业级 AI API 网关。�
 - `gateway_tokens_total`: 按模型统计的 Token 吞吐量
 - `http_request_duration_seconds`: 响应耗时分布
 
+## 🖥 Web 管理界面 (Admin UI)
+我们提供了一个基于 Nuxt.js 构建的现代化管理控制台，位于 `lowart-admin` 目录：
+- **功能**：可视化管理用户、配置模型、查看实时监控及在线聊天测试。
+- **启动方式**：
+  ```bash
+  cd lowart-admin
+  # 首次运行请安装依赖
+  npm install
+  # 启动开发服务器
+  npm run dev
+  ```
+- **访问**：默认访问地址为 `http://localhost:3000`。
+
+## 📑 使用教程
+想要了解更多关于用户管理、模型配置及 API 调用细节？请阅读 [使用教程](./docs/tutorial-zh.md)。
+
 ## 📝 许可证
 Apache 2.0 License
