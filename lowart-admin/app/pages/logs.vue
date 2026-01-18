@@ -12,7 +12,7 @@
         <label>模型</label>
         <select v-model="filters.model">
           <option value="">所有模型</option>
-          <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
+          <option v-for="m in modelList" :key="m" :value="m">{{ m }}</option>
         </select>
       </div>
       <button class="btn secondary" @click="resetFilters">重置</button>
@@ -70,47 +70,38 @@
 <script setup>
 import { Search, ArrowUpRight } from 'lucide-vue-next'
 
-const users = ['alice_dev', 'bob_research', 'system_cron']
-const models = ['gpt-4o', 'claude-3-5-sonnet', 'sdxl-v1']
+const { getStats } = useApi()
+const logs = ref([])
+const isLoading = ref(false)
+
+const loadStats = async () => {
+  isLoading.value = true
+  try {
+    const data = await getStats()
+    // Map backend response if necessary (e.g. timestamp format)
+    logs.value = data.map(item => ({
+      ...item,
+      id: `req_${item.timestamp}`, // Or use a proper ID if available in DB
+      duration: item.duration_ms,
+      status: 'Success' // Backend currently doesn't store error logs in usage_stats
+    }))
+  } catch (e) {
+    console.error('Failed to load stats:', e)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+onMounted(loadStats)
+
+const users = computed(() => [...new Set(logs.value.map(l => l.user_id))])
+const modelList = computed(() => [...new Set(logs.value.map(l => l.model_id))])
 
 const filters = reactive({
   user: '',
   model: '',
   search: ''
 })
-
-const logs = ref([
-  {
-    id: 'req_1',
-    timestamp: '2024-01-18T12:00:05Z',
-    user_id: 'alice_dev',
-    model_id: 'gpt-4o',
-    req_tokens: 156,
-    res_tokens: 842,
-    duration: 1240,
-    status: 'Success'
-  },
-  {
-    id: 'req_2',
-    timestamp: '2024-01-18T12:05:12Z',
-    user_id: 'bob_research',
-    model_id: 'sdxl-v1',
-    req_tokens: 50,
-    res_tokens: 0,
-    duration: 4500,
-    status: 'Success'
-  },
-  {
-    id: 'req_3',
-    timestamp: '2024-01-18T12:08:44Z',
-    user_id: 'alice_dev',
-    model_id: 'gpt-4o',
-    req_tokens: 42,
-    res_tokens: 12,
-    duration: 150,
-    status: 'Error'
-  }
-])
 
 const filteredLogs = computed(() => {
   return logs.value.filter(l => {

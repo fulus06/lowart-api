@@ -84,18 +84,55 @@ import {
   PieChart 
 } from 'lucide-vue-next'
 
+const { getStats, getModels, getUsers } = useApi()
+
 const stats = reactive({
-  requests: 1245,
-  tokens: 856000,
-  users: 42,
-  latency: 450
+  requests: 0,
+  tokens: 0,
+  users: 0,
+  latency: 0
 })
 
-const models = [
-  { name: 'gpt-4o', percent: 65, color: '#38bdf8' },
-  { name: 'claude-3-opus', percent: 20, color: '#818cf8' },
-  { name: 'sd-xl', percent: 15, color: '#10b981' }
-]
+const models = ref([])
+
+const loadDashboardData = async () => {
+  try {
+    const [statsData, modelsData, usersData] = await Promise.all([
+      getStats(),
+      getModels(),
+      getUsers()
+    ])
+
+    // Aggregate stats from recent logs
+    stats.requests = statsData.length
+    stats.tokens = statsData.reduce((acc, curr) => acc + curr.request_tokens + curr.response_tokens, 0)
+    stats.users = usersData.length
+    
+    const totalLatency = statsData.reduce((acc, curr) => acc + curr.duration_ms, 0)
+    stats.latency = statsData.length > 0 ? Math.round(totalLatency / statsData.length) : 0
+
+    // Prepare model distribution
+    const modelUsage = {}
+    statsData.forEach(s => {
+      modelUsage[s.model_id] = (modelUsage[s.model_id] || 0) + 1
+    })
+
+    const colors = ['#0ea5e9', '#6366f1', '#10b981', '#f59e0b', '#ef4444']
+    models.value = modelsData.slice(0, 5).map((m, i) => {
+      const count = modelUsage[m.model_id] || 0
+      const percent = statsData.length > 0 ? Math.round((count / statsData.length) * 100) : 0
+      return {
+        name: m.model_id,
+        percent: percent,
+        color: colors[i % colors.length]
+      }
+    })
+  } catch (e) {
+    console.error('Failed to load dashboard data:', e)
+  }
+}
+
+onMounted(loadDashboardData)
 </script>
 
 <style scoped>

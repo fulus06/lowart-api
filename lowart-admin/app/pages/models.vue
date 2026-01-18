@@ -94,43 +94,29 @@ import {
   X 
 } from 'lucide-vue-next'
 
+const { getModels } = useApi()
+const models = ref([])
+const isLoading = ref(false)
 const configuringFallback = ref(null)
 const currentFallbacks = ref([])
 
-// Mock Data
-const models = ref([
-  {
-    id: 'm1',
-    title: 'GPT-4 Omni',
-    model_id: 'gpt-4o',
-    vendor_type: 'OpenAI',
-    base_url: 'https://api.openai.com/v1',
-    cost_per_1k_tokens: 15,
-    is_active: true
-  },
-  {
-    id: 'm2',
-    title: 'Claude 3.5 Sonnet',
-    model_id: 'claude-3-5-sonnet',
-    vendor_type: 'Anthropic',
-    base_url: 'https://api.anthropic.com/v1',
-    cost_per_1k_tokens: 30,
-    is_active: true
-  },
-  {
-    id: 'm3',
-    title: 'Stable Diffusion XL',
-    model_id: 'sdxl-v1',
-    vendor_type: 'ComfyUI',
-    base_url: 'http://localhost:8188',
-    cost_per_1k_tokens: 0,
-    is_active: true
+const loadModels = async () => {
+  isLoading.value = true
+  try {
+    const data = await getModels()
+    models.value = data
+  } catch (e) {
+    console.error('Failed to load models:', e)
+  } finally {
+    isLoading.value = false
   }
-])
+}
+
+onMounted(loadModels)
 
 const configureFallback = (model) => {
   configuringFallback.value = model
-  // Mock fallback data
+  // Mock fallback data for now as specific endpoint might not be ready
   currentFallbacks.value = [
     { id: 'f1', fallback_model_id: 'gpt-4-turbo', trigger_condition: 'error/timeout' },
     { id: 'f2', fallback_model_id: 'gpt-3.5-turbo', trigger_condition: 'always' }

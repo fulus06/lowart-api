@@ -1,7 +1,7 @@
-use axum::{Json, response::IntoResponse, extract::State};
+use axum::{Json, response::IntoResponse, extract::{State, Extension}};
 use serde_json::json;
 use crate::router::AppState;
-use db::{UserRepo, ToolPolicyRepo, ConfigRepo, StatsRepo};
+use db::{UserRepo, ToolPolicyRepo, ConfigRepo, StatsRepo, models::User};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -28,6 +28,31 @@ pub struct RegisterMcpRequest {
 #[derive(Deserialize)]
 pub struct UnregisterMcpRequest {
     pub name: String,
+}
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    pub api_key: String,
+}
+
+#[derive(Deserialize)]
+pub struct CreateUserRequest {
+    pub username: String,
+    pub api_key: String,
+    pub is_admin: bool,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateUserRequest {
+    pub user_id: String,
+    pub username: String,
+    pub api_key: String,
+    pub status: String,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteUserRequest {
+    pub user_id: String,
 }
 
 
@@ -124,6 +149,97 @@ pub async fn list_stats(State(state): State<AppState>) -> impl IntoResponse {
     let stats_repo = StatsRepo::new(&db);
     match stats_repo.list_recent(100).await {
         Ok(stats) => Json(stats).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 登录验证 (校验 API Key 是否为管理员)
+pub async fn login(
+    State(state): State<AppState>,
+    Json(payload): Json<LoginRequest>
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let user_repo = UserRepo::new(&db);
+    
+    match user_repo.find_by_api_key(&payload.api_key).await {
+        Ok(Some(user)) => {
+            if user.is_admin {
+                Json(json!({
+                    "status": "success",
+                    "user": user
+                })).into_response()
+            } else {
+                (axum::http::StatusCode::FORBIDDEN, "仅限管理员登录").into_response()
+            }
+        }
+        Ok(None) => (axum::http::StatusCode::UNAUTHORIZED, "无效的 API Key").into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 创建新用户
+pub async fn create_user(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateUserRequest>
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let user_repo = UserRepo::new(&db);
+    
+    // 检查用户名唯一性
+    match user_repo.exists_by_username(&payload.username, None).await {
+        Ok(true) => return (axum::http::StatusCode::CONFLICT, "用户名已存在").into_response(),
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        _ => {}
+    }
+
+    let user_id = uuid::Uuid::new_v4().to_string();
+    match user_repo.create(&user_id, &payload.username, &payload.api_key, payload.is_admin).await {
+        Ok(_) => Json(json!({"status": "success", "user_id": user_id})).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 更新用户信息 (用户名、API Key、状态)
+pub async fn update_user(
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateUserRequest>
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let user_repo = UserRepo::new(&db);
+
+    // 检查用户名唯一性 (排除自己)
+    match user_repo.exists_by_username(&payload.username, Some(&payload.user_id)).await {
+        Ok(true) => return (axum::http::StatusCode::CONFLICT, "用户名已存在").into_response(),
+        Err(e) => return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        _ => {}
+    }
+
+    match user_repo.update_info(&payload.user_id, &payload.username, &payload.api_key, &payload.status).await {
+        Ok(_) => Json(json!({"status": "success"})).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 删除用户
+pub async fn delete_user(
+    State(state): State<AppState>,
+    Extension(current_user): Extension<User>,
+    Json(payload): Json<DeleteUserRequest>
+) -> impl IntoResponse {
+    // 保护根管理员
+    if payload.user_id == "admin_root_id" {
+        return (axum::http::StatusCode::FORBIDDEN, "根管理员不可删除").into_response();
+    }
+
+    // 防止删除自己
+    if payload.user_id == current_user.id {
+        return (axum::http::StatusCode::FORBIDDEN, "不能删除当前登录的账号").into_response();
+    }
+
+    let db = state.model_manager.db();
+    let user_repo = UserRepo::new(&db);
+    match user_repo.delete(&payload.user_id).await {
+        Ok(_) => Json(json!({"status": "success"})).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

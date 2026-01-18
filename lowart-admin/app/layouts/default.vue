@@ -35,6 +35,10 @@
             <span class="role">Admin Key Loaded</span>
           </div>
         </div>
+        <button class="logout-btn" @click="authStore.logout">
+          <LogOut :size="16" />
+          <span>注销退出</span>
+        </button>
       </div>
     </aside>
 
@@ -64,9 +68,11 @@ import {
   Box, 
   History, 
   MessageSquare,
-  BarChart3
+  BarChart3,
+  LogOut
 } from 'lucide-vue-next'
 
+const authStore = useAuthStore()
 const route = useRoute()
 const isOnline = ref(true)
 
@@ -143,8 +149,30 @@ const pageTitle = computed(() => {
 }
 
 .sidebar-footer {
-  padding-top: 1.5rem;
+  padding-top: 1rem;
   border-top: 1px solid var(--glass-border);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.logout-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem;
+  width: 100%;
+  border-radius: 8px;
+  color: var(--error);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  transition: var(--transition);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.logout-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+  transform: translateY(-1px);
 }
 
 .user-info {

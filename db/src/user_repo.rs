@@ -35,6 +35,24 @@ impl<'a> UserRepo<'a> {
         Ok(())
     }
 
+    /// 检查用户名是否存在
+    pub async fn exists_by_username(&self, username: &str, exclude_id: Option<&str>) -> Result<bool> {
+        let count: i64 = if let Some(id) = exclude_id {
+            sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = ? AND id != ?")
+                .bind(username)
+                .bind(id)
+                .fetch_one(&self.db.pool)
+                .await?
+        } else {
+            sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE username = ?")
+                .bind(username)
+                .fetch_one(&self.db.pool)
+                .await?
+        };
+
+        Ok(count > 0)
+    }
+
 
     /// 设置管理员状态
     pub async fn set_admin(&self, user_id: &str, is_admin: bool) -> Result<()> {
@@ -57,6 +75,25 @@ impl<'a> UserRepo<'a> {
         sqlx::query("UPDATE users SET rpm_limit = ?, token_quota = ? WHERE id = ?")
             .bind(rpm_limit)
             .bind(token_quota)
+            .bind(user_id)
+            .execute(&self.db.pool).await?;
+        Ok(())
+    }
+
+    /// 更新用户信息
+    pub async fn update_info(&self, user_id: &str, username: &str, api_key: &str, status: &str) -> Result<()> {
+        sqlx::query("UPDATE users SET username = ?, api_key = ?, status = ? WHERE id = ?")
+            .bind(username)
+            .bind(api_key)
+            .bind(status)
+            .bind(user_id)
+            .execute(&self.db.pool).await?;
+        Ok(())
+    }
+
+    /// 删除用户
+    pub async fn delete(&self, user_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM users WHERE id = ?")
             .bind(user_id)
             .execute(&self.db.pool).await?;
         Ok(())

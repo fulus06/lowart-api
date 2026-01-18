@@ -38,13 +38,19 @@ pub fn create_router(state: AppState, metrics_handle: PrometheusHandle) -> Route
     // 公开接口
     let public_routes = Router::new()
         .route("/health", get(handlers::health_check))
+        .route("/admin/login", post(admin_handlers::login))
         .route("/metrics", get(move || async move {
             metrics_handle.render()
         }));
 
     // 管理接口 (需 Auth + Admin 权限)
     let admin_routes = Router::new()
-        .route("/users", get(admin_handlers::list_users))
+        .route("/users", 
+            get(admin_handlers::list_users)
+            .post(admin_handlers::create_user)
+            .put(admin_handlers::update_user)
+            .delete(admin_handlers::delete_user)
+        )
         .route("/users/quota", post(admin_handlers::update_user_quota))
         .route("/models", get(admin_handlers::list_models))
         .route("/stats", get(admin_handlers::list_stats))
@@ -65,16 +71,27 @@ pub fn create_router(state: AppState, metrics_handle: PrometheusHandle) -> Route
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([
+            Method::GET, 
+            Method::POST, 
+            Method::PUT, 
+            Method::DELETE, 
+            Method::OPTIONS,
+            Method::PATCH,
+        ])
         .allow_headers(Any);
+
+    // 合并受保护的接口并应用鉴权中间件
+    let protected_routes = Router::new()
+        .nest("/admin", admin_routes)
+        .nest("/v1", api_routes)
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()
         .merge(public_routes)
-        .nest("/admin", admin_routes)
-        .nest("/v1", api_routes)
-        .layer(cors) // 添加 CORS 层
-        .layer(middleware::from_fn_with_state(state.clone(), metrics_middleware)) // 指标记录优先
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .merge(protected_routes)
+        .layer(middleware::from_fn_with_state(state.clone(), metrics_middleware))
+        .layer(cors)
         .with_state(state)
 }
 

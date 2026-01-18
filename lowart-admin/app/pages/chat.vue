@@ -63,13 +63,14 @@
 <script setup>
 import { Send, RotateCcw } from 'lucide-vue-next'
 
-const models = ['gpt-4o', 'claude-3-5-sonnet', 'sdxl-v1']
+const { getModels, chat } = useApi()
+const models = ref([])
 const messageList = ref(null)
 
 const config = reactive({
-  model: 'gpt-4o',
+  model: '',
   system: '',
-  stream: true,
+  stream: false,
   temperature: 0.7
 })
 
@@ -79,8 +80,22 @@ const messages = ref([
   { role: 'assistant', content: '您好！我是 Lowart AI 测试助手。请选择一个模型开始测试。' }
 ])
 
+const loadModels = async () => {
+  try {
+    const data = await getModels()
+    models.value = data.map(m => m.model_id)
+    if (models.value.length > 0) {
+      config.model = models.value[0]
+    }
+  } catch (e) {
+    console.error('Failed to load models:', e)
+  }
+}
+
+onMounted(loadModels)
+
 const sendMessage = async () => {
-  if (!userInput.value || isTyping.value) return
+  if (!userInput.value || !config.model || isTyping.value) return
 
   const userMsg = userInput.value
   messages.value.push({ role: 'user', content: userMsg })
@@ -89,20 +104,31 @@ const sendMessage = async () => {
 
   // Scroll to bottom
   nextTick(() => {
-    messageList.value.scrollTop = messageList.value.scrollHeight
+    if (messageList.value) messageList.value.scrollTop = messageList.value.scrollHeight
   })
 
-  // Mock response (TODO: Integration with actual SSE)
-  setTimeout(() => {
+  try {
+    const response = await chat({
+      model: config.model,
+      messages: [
+        ...(config.system ? [{ role: 'system', content: config.system }] : []),
+        ...messages.value.map(m => ({ role: m.role, content: m.content }))
+      ],
+      stream: false,
+      temperature: config.temperature
+    })
+
+    const assistantMsg = response.choices[0].message.content
+    messages.value.push({ role: 'assistant', content: assistantMsg })
+  } catch (e) {
+    console.error('Chat error:', e)
+    messages.value.push({ role: 'assistant', content: `[错误] 无法获取模型响应: ${e.message}` })
+  } finally {
     isTyping.value = false
-    messages.value.push({ 
-      role: 'assistant', 
-      content: `[测试模式] 收到消息: "${userMsg}"。这是来自 ${config.model} 的响应。` 
-    })
     nextTick(() => {
-      messageList.value.scrollTop = messageList.value.scrollHeight
+      if (messageList.value) messageList.value.scrollTop = messageList.value.scrollHeight
     })
-  }, 1000)
+  }
 }
 
 const clearChat = () => {

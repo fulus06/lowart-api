@@ -1,22 +1,41 @@
 export const useApi = () => {
     const config = useRuntimeConfig()
+    const authStore = useAuthStore()
     const baseUrl = 'http://localhost:8080'
-    const adminKey = 'admin_default_key' // Should be dynamic in real use
+    const adminKey = computed(() => authStore.adminKey)
 
     const fetchWithAuth = async (url: string, options: any = {}) => {
         return await $fetch(url, {
             baseURL: baseUrl,
             ...options,
             headers: {
-                'Authorization': `Bearer ${adminKey}`,
+                'Authorization': `Bearer ${adminKey.value}`,
                 ...options.headers,
             }
         })
     }
 
     return {
+        // Auth API
+        login: (api_key: string) => $fetch(`${baseUrl}/admin/login`, {
+            method: 'POST',
+            body: { api_key }
+        }),
+
         // User APIs
         getUsers: () => fetchWithAuth('/admin/users'),
+        createUser: (payload: { username: string, api_key: string, is_admin: boolean }) => fetchWithAuth('/admin/users', {
+            method: 'POST',
+            body: payload
+        }),
+        updateUser: (payload: { user_id: string, username: string, api_key: string, status: string }) => fetchWithAuth('/admin/users', {
+            method: 'PUT',
+            body: payload
+        }),
+        deleteUser: (user_id: string) => fetchWithAuth('/admin/users', {
+            method: 'DELETE',
+            body: { user_id }
+        }),
         updateQuota: (payload: { user_id: string, rpm_limit: number, token_quota: number }) => fetchWithAuth('/admin/users/quota', {
             method: 'POST',
             body: payload
