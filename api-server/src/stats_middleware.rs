@@ -42,6 +42,7 @@ pub async fn stats_middleware(
             request_count: 1,
             response_count: 1,
             duration_ms: duration,
+            stat_type: "用户请求".to_string(),
             timestamp: Utc::now(),
         };
         if let Err(e) = repo.record(stat).await {

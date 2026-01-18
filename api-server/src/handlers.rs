@@ -41,12 +41,38 @@ where
                     let latency = self.start_time.elapsed().as_millis();
                     tracing::debug!("[Stream] 第一次接收到厂商原始分片, Latency: {}ms, 时间: {:?}", latency, chrono::Utc::now());
                 }
-                if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
-                    if let Some(delta) = choices.get(0).and_then(|c| c.get("delta")) {
-                        if let Some(content) = delta.get("content").and_then(|t| t.as_str()) {
-                            self.accumulated_content.push_str(content);
+                // 提取内容用于 Token 计数
+                let content_to_accumulate = if let Some(raw_text) = val.get("raw").and_then(|r| r.as_str()) {
+                    // 处理适配器二次封装的情况: {"raw": "data: {...}"}
+                    let mut found_content = String::new();
+                    for line in raw_text.lines() {
+                        let line = line.trim();
+                        if line.starts_with("data: ") && line != "data: [DONE]" {
+                            if let Ok(parsed) = serde_json::from_str::<Value>(&line[6..]) {
+                                if let Some(content) = parsed.get("choices").and_then(|v| v.as_array())
+                                    .and_then(|a| a.get(0))
+                                    .and_then(|c| c.get("delta"))
+                                    .and_then(|d| d.get("content"))
+                                    .and_then(|t| t.as_str()) {
+                                    found_content.push_str(content);
+                                }
+                            }
                         }
                     }
+                    found_content
+                } else {
+                    // 处理标准格式
+                    val.get("choices").and_then(|v| v.as_array())
+                        .and_then(|a| a.get(0))
+                        .and_then(|c| c.get("delta"))
+                        .and_then(|d| d.get("content"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                };
+                
+                if !content_to_accumulate.is_empty() {
+                    self.accumulated_content.push_str(&content_to_accumulate);
                 }
                 // TODO: 只有dev模式下才进入当前代码
                 if !self.first_chunk_logged {
@@ -64,19 +90,21 @@ where
                 let user_id = self.user.id.clone();
                 let model_id = self.model_id.clone();
                 let req_tokens = self.req_tokens;
+                let start_time = self.start_time;
                 let db = self.db.clone();
 
                 tokio::spawn(async move {
                     use lowart_core::TokenCounter;
                     let res_tokens = TokenCounter::count_tokens(&content);
                     let total_tokens = (req_tokens + res_tokens) as i64;
+                    let duration = start_time.elapsed().as_millis() as i64;
                     
                     // 增加实时指标记录
                     counter!("gateway_tokens_total", "type" => "request", "model" => model_id.clone()).increment(req_tokens as u64);
                     counter!("gateway_tokens_total", "type" => "response", "model" => model_id.clone()).increment(res_tokens as u64);
 
                     let _ = db::UserRepo::new(&db).increment_token_usage(&user_id, total_tokens).await;
-                    let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_id, req_tokens as i64, res_tokens as i64).await;
+                    let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_id, req_tokens as i64, res_tokens as i64, "厂商返回响应", duration).await;
                 });
 
 
@@ -187,8 +215,9 @@ pub async fn chat_completions(
                         let req_tokens = TokenCounter::count_messages_tokens(payload_clone.get("messages").unwrap_or(&json!([])));
                         let res_tokens = TokenCounter::count_tokens(res.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|c| c.as_str()).unwrap_or_default());
 
+                        let duration = request_start_time.elapsed().as_millis() as i64;
                         let _ = db::UserRepo::new(&db_clone).increment_token_usage(&user_id, (req_tokens + res_tokens) as i64).await;
-                        let _ = db::StatsRepo::new(&db_clone).record_usage(&user_id, &model_id_str, req_tokens as i64, res_tokens as i64).await;
+                        let _ = db::StatsRepo::new(&db_clone).record_usage(&user_id, &model_id_str, req_tokens as i64, res_tokens as i64, "厂商返回响应", duration).await;
                     }
                     Err(e) => {
                         cb_clone.report_result(&model_id_str, false).await;
@@ -353,6 +382,7 @@ pub async fn chat_completions(
 
                         let user_id = user.id.clone();
                         let model_repo_id = current_model_id.clone();
+                        let duration = request_start_time.elapsed().as_millis() as i64;
                         let db = state.model_manager.db();
                         tokio::spawn(async move {
                              // 增加实时指标记录
@@ -360,7 +390,7 @@ pub async fn chat_completions(
                              counter!("gateway_tokens_total", "type" => "response", "model" => model_repo_id.clone()).increment(total_res_tokens as u64);
 
                              let _ = db::UserRepo::new(&db).increment_token_usage(&user_id, (total_req_tokens + total_res_tokens) as i64).await;
-                             let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_repo_id, total_req_tokens as i64, total_res_tokens as i64).await;
+                             let _ = db::StatsRepo::new(&db).record_usage(&user_id, &model_repo_id, total_req_tokens as i64, total_res_tokens as i64, "厂商返回响应", duration).await;
                         });
 
 

@@ -44,5 +44,6 @@ pub struct UsageStat {
     pub request_count: i64,
     pub response_count: i64,
     pub duration_ms: i64,
+    pub stat_type: String,
     pub timestamp: DateTime<Utc>,
 }
