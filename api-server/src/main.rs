@@ -15,6 +15,7 @@ async fn main() -> anyhow::Result<()> {
     // 1. 初始化日志
     logger::init();
     tracing::info!("Lowart-api 正在启动...");
+    tracing::debug!("Lowart-api debug log...");
 
     // 2. 初始化监控 指标 (Prometheus)
     let metrics_handle = PrometheusBuilder::new()

@@ -23,6 +23,8 @@ struct TokenAccountingStream<S> {
     req_tokens: usize,
     accumulated_content: String,
     db: Arc<db::DbConnection>,
+    first_chunk_logged: bool,
+    start_time: std::time::Instant,
 }
 
 impl<S> Stream for TokenAccountingStream<S> 
@@ -34,7 +36,11 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match Pin::new(&mut self.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(val))) => {
-                tracing::info!("[Stream] 接收到厂商原始分片, 时间: {:?}", chrono::Utc::now());
+                // TODO: 只有dev模式下才进入当前代码
+                if !self.first_chunk_logged {
+                    let latency = self.start_time.elapsed().as_millis();
+                    tracing::debug!("[Stream] 第一次接收到厂商原始分片, Latency: {}ms, 时间: {:?}", latency, chrono::Utc::now());
+                }
                 if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
                     if let Some(delta) = choices.get(0).and_then(|c| c.get("delta")) {
                         if let Some(content) = delta.get("content").and_then(|t| t.as_str()) {
@@ -42,7 +48,12 @@ where
                         }
                     }
                 }
-                tracing::info!("[Stream] 准备向前端转发 SSE, 时间: {:?}", chrono::Utc::now());
+                // TODO: 只有dev模式下才进入当前代码
+                if !self.first_chunk_logged {
+                    let latency = self.start_time.elapsed().as_millis();
+                    tracing::debug!("[Stream] 第一次准备向前端转发 SSE, Latency: {}ms, 时间: {:?}", latency, chrono::Utc::now());
+                    self.get_mut().first_chunk_logged = true;
+                }
                 Poll::Ready(Some(Ok(Event::default().data(val.to_string()))))
             }
             Poll::Ready(Some(Err(e))) => {
@@ -81,6 +92,7 @@ pub async fn chat_completions(
     Extension(user): Extension<db::User>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
+    let request_start_time = std::time::Instant::now();
     let primary_model_id = match payload.get("model").and_then(|m| m.as_str()) {
         Some(m) => m.to_string(),
         None => return (axum::http::StatusCode::BAD_REQUEST, "Missing model").into_response(),
@@ -208,6 +220,8 @@ pub async fn chat_completions(
                         req_tokens,
                         accumulated_content: String::new(),
                         db: state.model_manager.db(),
+                        first_chunk_logged: false,
+                        start_time: request_start_time,
                     };
                     let mut res = Sse::new(accounting_stream).into_response();
                     res.extensions_mut().insert(ModelId(current_model_id.clone()));
