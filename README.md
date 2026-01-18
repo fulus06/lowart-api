@@ -1,80 +1,103 @@
 # Lowart-api
 [中文](./README-zh.md)
-Lowart-api is a lightweight, high-performance AI API service built with Rust. It is designed to be compatible with both network-based AI vendors and local AI workflows, providing a unified interface for AI interactions.
 
-## Key Features
+Lowart-api is a lightweight, enterprise-grade AI API gateway built with Rust. It provides a unified interface for managing both cloud-based AI providers (e.g., OpenAI, Anthropic) and local AI workflows (e.g., ComfyUI), featuring industrial-strength stability, dynamic governance, and comprehensive observability.
 
-- **Modular Architecture**: Built as a Cargo workspace with clean separation of concerns.
-- **Multi-Model Support**: Standard adapters for OpenAI, Anthropic, and ComfyUI.
-- **Dynamic Transformation**: Integrated **Rhai** scripting engine for on-the-fly request and response payload transformations.
-- **Efficient Routing**: A `ModelManager` that dynamically selects adapters based on database configurations.
-- **Real-time Streaming**: Full support for Server-Sent Events (SSE) across all vendors.
-- **Comprehensive Statistics**: Automatic tracking of token counts, request duration, and usage frequency stored in SQLite.
-- **Dual Mode Connectivity**: Supports both standard HTTP and ultra-low latency Unix Domain Socket (UDS).
-- **Secure Authentication**: Middleware-based API Key verification.
+## 🌟 Key Features
 
-## Architecture
+### 1. High Availability & Resilience
+- **Circuit Breaker**: Monitors provider health using a sliding window to automatically isolate failing models and prevent cascading failures.
+- **Multi-Level Fallback**: Configure model priority chains to seamlessly switch to backup models within seconds upon primary failure, ensuring zero downtime.
+- **Async Job Tracking**: Transform long-running generation tasks (e.g., ComfyUI) into background jobs with status polling and result persistence.
 
-The project is divided into several specialized crates:
-- `api-server`: The core gateway handling HTTP/UDS routes and middlewares.
-- `core`: The heart of the engine, managing `ModelManager`, `TokenCounter`, and `RhaiEngine`.
-- `models`: Unified trait-based implementations for different AI vendors.
-- `db`: Database layer using SQLite (SQLx) for persistence.
-- `auth`: Identity management and authentication logic.
-- `protocols`: Support for SSE, A2A, and MCP protocols.
-- `utils`: Shared utilities for logging and error handling.
+### 2. Governance & Agent Ecosystem
+- **Deep MCP Integration**: Full support for Model Context Protocol (Stdio-based), enabling dynamic integration of tool servers written in Node.js, Python, etc.
+- **Human-in-the-Loop (HITL)**: Built-in tool execution policies (Auto, Confirm, Block) with session-level support for manual authorization and replay.
+- **Agent Bus (A2A)**: Asynchronous message bus for task distribution and efficient collaboration between multiple AI Agents.
 
-## Getting Started
+### 3. Extensibility & Security
+- **Rhai Scripting Engine**: Hot-reload request/response transformation logic without server restarts, making it easy to adapt to non-standard protocols.
+- **Commercial-Grade Billing**:
+  - **Accurate SSE Tracking**: Solves the challenge of tracking tokens for streaming outputs.
+  - **Quota Management**: Token-based tiered billing and RPM (Requests Per Minute) rate limiting.
+- **Hardened Security**: Provider API Keys are encrypted with AES-256-GCM. Built-in RBAC for administrative access control.
+
+### 4. Industrial Observability
+- **High-Performance Caching**: Integrated `moka` cache for millisecond responses on authentication and configuration lookups.
+- **Dual-Mode Connectivity**: Support for standard TCP and ultra-low latency Unix Domain Sockets (UDS).
+- **Prometheus Metrics**: Real-time exposure of model traffic, response latency, and token consumption data at the `/metrics` endpoint.
+
+---
+
+## 🚀 Usage Scenarios
+
+### Scenario 1: Enterprise Unified AI Gateway
+Centralize LLM access for multiple internal development teams:
+- **Description**: Manage API Keys across different vendors and enforce token quotas and rate limits per department.
+- **Value**: Ensure business continuity through circuit breaking and automatic failover if a provider goes down.
+
+### Scenario 2: Advanced Tooling for Agent Systems
+Empower autonomous Agents with a robust toolset:
+- **Description**: Connect local databases, search plugins, or complex Python scripts via MCP.
+- **Value**: Use the three-tier governance policy (HITL) to ensure sensitive operations (e.g., deletions, transfers) require manual approval.
+
+### Scenario 3: Async Generative AI Pipeline
+Handle time-consuming image or video generation tasks:
+- **Description**: Connect to generative engines like ComfyUI, converting HTTP requests into async jobs where users poll for results via Job IDs.
+- **Value**: Use Rhai scripts to dynamically adapt to complex ComfyUI JSON workflows.
+
+---
+
+## 🏗 Architecture Overview
+
+The project is structured as a modular Cargo workspace:
+- **`api-server`**: Built with Axum 0.8, handling UDS/TCP listeners, routing, and administrative middleware.
+- **`lowart-core`**: The heart of the system, containing `CircuitBreaker`, `ModelManager`, `TokenCounter`, and `RhaiEngine`.
+- **`models`**: Adapter layer for OpenAI, Anthropic, and ComfyUI protocol conversions.
+- **`db`** Persistence layer using SQLite (SQLx) with automated migration covering the unified schema.
+- **`auth`**: Identity and security layer managing API Key verification and RBAC.
+- **`protocols`**: Implementation of SSE, A2A Bus, and MCP client communications.
+
+---
+
+## 🛠 Getting Started
 
 ### Prerequisites
-- Rust (latest stable version)
+- Rust (1.80+)
 - SQLite
 
 ### Installation
-1. Clone the repository:
+1. **Clone the Repo**:
    ```bash
    git clone <repository_url>
    cd lowart-api
    ```
-2. Initialize the database:
-   The application will automatically create `lowart.db` and initialize the schema on the first run.
+2. **Setup**:
+   Database `lowart.db` is automatically created on first run using the consolidated migration `01_initial_schema.sql`.
+3. **Run**:
+   ```bash
+   # Standard HTTP mode
+   cargo run -p api-server
 
-### Running the Server
-```bash
-# Start in HTTP mode (default)
-cargo run -p api-server
+   # High-performance UDS mode
+   LISTEN_MODE=UDS cargo run -p api-server
+   ```
 
-# Or set custom listen mode
-LISTEN_MODE=UDS cargo run -p api-server
-```
+### Admin Operations (Example)
+- **Register an MCP Tool Server**:
+  ```bash
+  curl -X POST http://localhost:3000/admin/mcp/register \
+    -H "Authorization: Bearer <ADMIN_KEY>" \
+    -d '{"name": "os-tools", "command": "python3", "args": ["tools.py"]}'
+  ```
 
-## Usage Example
+---
 
-### Chat Completion (Blocking)
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer <YOUR_API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
+## 📈 Monitoring
+Access `http://localhost:3000/metrics` for real-time Prometheus data:
+- `http_requests_total`: Total request count.
+- `gateway_tokens_total`: Token throughput per model.
+- `http_request_duration_seconds`: Response latency distribution.
 
-### Chat Completion (Streaming)
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer <YOUR_API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "stream": true,
-    "messages": [{"role": "user", "content": "Explain Rust in detail."}]
-  }'
-```
-
-## Contributing
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-MIT License
+## 📝 License
+Apache 2.0 License

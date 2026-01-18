@@ -1,80 +1,103 @@
 # Lowart-api
 [English](./README.md)
-Lowart-api 是一个基于 Rust 开发的轻量级、高性能 AI API 服务。它旨在同时兼容云端 AI 供应商和本地 AI 工作流，为 AI 交互提供统一的接口。
 
-## 核心特性
+Lowart-api 是一个基于 Rust 开发的轻量级、企业级 AI API 网关。它旨在通过统一的接口管理云端 AI 供应商（如 OpenAI, Anthropic）与本地 AI 工作流（如 ComfyUI），并提供工业级的稳定性保障、动态治理与可观测性。
 
-- **模块化架构**：基于 Cargo Workspace 构建，模块职责分离清晰。
-- **多模型支持**：内置 OpenAI、Anthropic 和 ComfyUI 标准适配器。
-- **动态格式转换**：集成 **Rhai** 脚本引擎，支持在不重启服务的情况下动态转换请求和响应负载。
-- **高效路由**：通过 `ModelManager` 根据数据库配置动态选择适配器。
-- **流式输出**：全链路支持 Server-Sent Events (SSE) 流式对话。
-- **完善的使用统计**：自动追踪 Token 消耗、请求耗时及频率，并存储于 SQLite。
-- **双模连接**：支持标准 HTTP 端口监听及极低延迟的 Unix Domain Socket (UDS)。
-- **安全鉴权**：内置中间件实现的 API Key 校验机制。
+## 🌟 核心特性
 
-## 架构说明
+### 1. 高可用与弹性 (High Availability)
+- **熔断机制 (Circuit Breaker)**：基于滑动窗口监测供应商健康度，自动隔离故障模型，防止故障级联。
+- **多级降级 (Fallback)**：支持配置模型优先级链条，主模型异常时秒级切换至备用模型，确保业务零中断。
+- **异步任务追踪 (Jobs)**：支持将长耗时生成任务（如 ComfyUI）转为后台 Job，支持状态轮询与结果持久化。
 
-项目由多个专业 crate 组成：
-- `api-server`：核心网关，处理 HTTP/UDS 路由及中间件。
-- `core`：引擎核心，管理 `ModelManager`、`TokenCounter` 及 `RhaiEngine`。
-- `models`：基于 Trait 定义的多厂商模型实现。
-- `db`：数据库层，使用 SQLite (SQLx) 进行持久化存储。
-- `auth`：身份管理与鉴权逻辑。
-- `protocols`：支持 SSE、A2A 及 MCP 等协议。
-- `utils`：通用的日志记录与错误处理工具。
+### 2. 工具治理与 Agent 协作 (Governance & Agents)
+- **MCP 深度集成**：完整支持 Model Context Protocol，支持 Stdio 模式动态接入各类工具服务器（Node.js, Python 等）。
+- **人机协同 (HITL)**：内置工具执行策略（自动、需确认、禁止），支持会话级的人工授权重放。
+- **Agent 总线 (A2A)**：提供异步消息总线，支持多个 AI Agent 之间的任务分发与协作。
 
-## 快速入门
+### 3. 动态扩展与安全 (Extensibility & Security)
+- **Rhai 脚本引擎**：无需重启即可热更新请求/响应转换逻辑，适配各种非标协议。
+- **商用级统计与计费**：
+  - **SSE 全量精准计费**：攻克了流式输出无法直接统计 Token 的难题。
+  - **配额管理**：支持基于 Token 的阶梯计费与 RPM 速率限制。
+- **安全加固**：基于 AES-256-GCM 加密存储供应商 API Keys，内置管理员 RBAC 权限控制。
+
+### 4. 工业级性能与观测 (Performance & Observability)
+- **极速缓存**：集成 `moka` 高性能缓存，针对鉴权与配置实现毫秒级响应。
+- **双模通信**：支持标准 TCP 协议与低延迟 Unix Domain Socket (UDS)。
+- **Prometheus 指标**：实时暴露模型流量、响应耗时及 Token 消耗等核心运营数据。
+
+---
+
+## 🚀 使用场景
+
+### 场景一：企业级 AI 统一网关
+企业内部有多个开发团队需要调用 LLM，Lowart-api 可作为中台：
+- **场景描述**：统一管理不同供应商的 API Key，对不同部门进行 Token 配额控制与速率限制。
+- **价值点**：通过熔断和降级机制，避免因某个供应商宕机导致业务全面瘫痪。
+
+### 场景二：复杂 Agent 系统工具箱
+为自主 Agent 提供强大的工具调用能力：
+- **场景描述**：通过 MCP 接入本地数据库、搜索插件或复杂的 Python 脚本工具。
+- **价值点**：利用三级治理策略（HITL），确保 Agent 在调用敏感操作（如删除、转账）时必须经过人工确认。
+
+### 场景三：生成式 AI 异步流水线
+处理长耗时的图片、视频生成任务：
+- **场景描述**：接入 ComfyUI 等生成引擎，将 HTTP 请求转为异步 Job，用户通过 Job ID 轮询结果。
+- **价值点**：内置的 Rhai 脚本可动态适配复杂的 ComfyUI JSON 工作流。
+
+---
+
+## 🏗 架构说明
+
+项目采用模块化 Workspace 结构，各 crate 职责如下：
+- **`api-server`**：基于 Axum 0.8 构建，负责 UDS/TCP 监听、路由分发与 Admin 中间件。
+- **`lowart-core`**：系统心脏，包含 `CircuitBreaker`、`ModelManager`、`TokenCounter` 及 `RhaiEngine`。
+- **`models`**：供应商适配层，实现了 OpenAI、Anthropic 及 ComfyUI 的协议转换。
+- **`db`**：持久化层，基于 SQLite (SQLx) 实现了联合 Schema 的自动化迁移。
+- **`auth`**：身份安全层，负责 API Key 校验及管理员权限验证。
+- **`protocols`**：协议定义层，涵盖 SSE 流式协议、A2A 总线及 MCP 客户端通信。
+
+---
+
+## 🛠 快速上手
 
 ### 环境要求
-- Rust (最新稳定版)
+- Rust (1.80+)
 - SQLite
 
-### 安装步骤
-1. 克隆仓库：
+### 安装与运行
+1. **克隆并准备**：
    ```bash
    git clone <repository_url>
    cd lowart-api
    ```
-2. 数据库初始化：
-   应用在首次运行时会自动创建 `lowart.db` 并初始化相关表结构。
+2. **初始化配置**：
+   应用首次运行会自动创建 `lowart.db` 并应用单一 Schema 迁移文件 `01_initial_schema.sql`。
+3. **启动服务**：
+   ```bash
+   # 标准 HTTP 模式
+   cargo run -p api-server
 
-### 启动服务
-```bash
-# 以 HTTP 模式启动（默认）
-cargo run -p api-server
+   # 高性能 UDS 模式
+   LISTEN_MODE=UDS cargo run -p api-server
+   ```
 
-# 或设置 UDS 模式
-LISTEN_MODE=UDS cargo run -p api-server
-```
+### 管理端操作 (示例)
+- **注册 MCP 工具服务器**：
+  ```bash
+  curl -X POST http://localhost:3000/admin/mcp/register \
+    -H "Authorization: Bearer <ADMIN_KEY>" \
+    -d '{"name": "os-tools", "command": "python3", "args": ["tools.py"]}'
+  ```
 
-## 使用示例
+---
 
-### 对话请求（阻塞）
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer <您的API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "messages": [{"role": "user", "content": "你好！"}]
-  }'
-```
+## 📈 运维观测
+访问 `http://localhost:3000/metrics` 即可获取 Prometheus 格式的实时监控数据，包括：
+- `http_requests_total`: 请求总数
+- `gateway_tokens_total`: 按模型统计的 Token 吞吐量
+- `http_request_duration_seconds`: 响应耗时分布
 
-### 对话请求（流式）
-```bash
-curl -X POST http://localhost:3000/v1/chat/completions \
-  -H "Authorization: Bearer <您的API_KEY>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4",
-    "stream": true,
-    "messages": [{"role": "user", "content": "详细介绍一下 Rust。"}]
-  }'
-```
-
-## 贡献
-欢迎提交 Pull Request 以持续优化项目！
-
-## 许可证
-MIT License
+## 📝 许可证
+Apache 2.0 License
