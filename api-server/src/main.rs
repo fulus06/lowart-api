@@ -1,4 +1,4 @@
-use api_server::{router, handlers};
+use api_server::router;
 
 
 use metrics_exporter_prometheus::PrometheusBuilder;
@@ -56,11 +56,12 @@ async fn main() -> anyhow::Result<()> {
 
 
 
-    // 4. 选择启动模式
-    let uds_path = std::env::var("UDS_PATH").ok();
+    // 5. 选择启动模式
+    let listen_mode = std::env::var("LISTEN_MODE").unwrap_or_default();
 
-    if let Some(path) = uds_path {
+    if listen_mode == "UDS" {
         // UDS 模式
+        let path = std::env::var("UDS_PATH").unwrap_or_else(|_| "/tmp/lowart.sock".to_string());
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
         tracing::info!("正在监听 UDS: {}", path);
