@@ -2,4 +2,4 @@ target
 .agent
 .DS_Store
 
-ignore/*
+ignore
