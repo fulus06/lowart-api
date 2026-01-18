@@ -28,4 +28,23 @@ impl<'a> ConfigRepo<'a> {
             .await?;
         Ok(config)
     }
+
+    /// 创建或重置模型配置
+    pub async fn create(&self, config: &ModelConfig) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO model_configs (id, title, model_id, api_key, base_url, vendor_type, cost_per_1k_tokens, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&config.id)
+        .bind(&config.title)
+        .bind(&config.model_id)
+        .bind(&config.api_key)
+        .bind(&config.base_url)
+        .bind(&config.vendor_type)
+        .bind(config.cost_per_1k_tokens)
+        .bind(config.is_active)
+        .bind(config.created_at)
+        .execute(&self.db.pool).await?;
+        Ok(())
+    }
 }
+

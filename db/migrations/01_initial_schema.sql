@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS model_configs (
     id TEXT PRIMARY KEY,          -- UUID
     title TEXT NOT NULL,
-    model_id TEXT NOT NULL,       -- 如 gpt-4, claude-3
+    model_id TEXT NOT NULL UNIQUE,       -- 如 gpt-4, claude-3
     api_key TEXT NOT NULL,        -- 加密存储的 API Key
     base_url TEXT NOT NULL,       -- 厂商 API 地址
     vendor_type TEXT NOT NULL,    -- OpenAI, Anthropic, ComfyUI

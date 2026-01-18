@@ -70,7 +70,11 @@ impl ModelManager {
                 config.model_id.clone(),
                 config.base_url.clone(),
             )),
+            "Mock" => Arc::new(models::MockAdapter::success()),
+            "MockFail" => Arc::new(models::MockAdapter::fail("Mock failure")),
+            "MockTool" => Arc::new(models::MockAdapter::with_tool_call("call-1", "test_tool", "{\"arg1\": 123}")),
             _ => return Err(anyhow!("不支持的厂商类型: {}", config.vendor_type)),
+
         };
 
         // 4. 写入缓存并返回

@@ -97,3 +97,57 @@ impl CircuitBreaker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_circuit_breaker_transitions() {
+        let cb = CircuitBreaker::new(3, Duration::from_millis(100));
+        let model = "test-model";
+
+        // 1. Initial State: Closed
+        assert!(cb.is_allowed(model).await);
+
+        // 2. Report 3 failures -> Open
+        cb.report_result(model, false).await;
+        cb.report_result(model, false).await;
+        cb.report_result(model, false).await;
+        assert!(!cb.is_allowed(model).await);
+
+        // 3. Wait for reset timeout -> HalfOpen
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        assert!(cb.is_allowed(model).await); // Enters HalfOpen
+
+        // 4. Report success -> Closed
+        cb.report_result(model, true).await;
+        assert!(cb.is_allowed(model).await);
+        
+        // Ensure failure count is reset
+        cb.report_result(model, false).await;
+        assert!(cb.is_allowed(model).await);
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_half_open_failure() {
+        let cb = CircuitBreaker::new(3, Duration::from_millis(100));
+        let model = "test-model";
+
+        // Open state
+        for _ in 0..3 { cb.report_result(model, false).await; }
+        assert!(!cb.is_allowed(model).await);
+
+        // HalfOpen state
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        assert!(cb.is_allowed(model).await);
+
+        // Success in HalfOpen -> Closed
+        cb.report_result(model, true).await;
+        
+        // Failure now shouldn't trip it immediately
+        cb.report_result(model, false).await;
+        assert!(cb.is_allowed(model).await);
+    }
+}
+

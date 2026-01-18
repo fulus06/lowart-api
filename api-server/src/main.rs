@@ -1,11 +1,5 @@
-mod handlers;
-mod router;
-mod auth_middleware;
-mod stats_middleware;
-mod limit_middleware;
-mod admin_handlers;
-mod admin_middleware;
-mod metrics_middleware;
+use api_server::{router, handlers};
+
 
 use metrics_exporter_prometheus::PrometheusBuilder;
 

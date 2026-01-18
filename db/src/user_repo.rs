@@ -23,16 +23,18 @@ impl<'a> UserRepo<'a> {
     }
 
     /// 创建用户
-    pub async fn create(&self, user_id: &str, api_key: &str, is_admin: bool) -> Result<()> {
+    pub async fn create(&self, user_id: &str, username: &str, api_key: &str, is_admin: bool) -> Result<()> {
         sqlx::query(
-            "INSERT INTO users (id, api_key, is_admin, rpm_limit, token_quota, token_used) VALUES (?, ?, ?, 60, 1000000, 0)"
+            "INSERT INTO users (id, username, api_key, status, is_admin, rpm_limit, token_quota, token_used) VALUES (?, ?, ?, 'Active', ?, 60, 1000000, 0)"
         )
         .bind(user_id)
+        .bind(username)
         .bind(api_key)
         .bind(is_admin)
         .execute(&self.db.pool).await?;
         Ok(())
     }
+
 
     /// 设置管理员状态
     pub async fn set_admin(&self, user_id: &str, is_admin: bool) -> Result<()> {
