@@ -8,7 +8,9 @@
         <div class="stat-info">
           <span class="label">今日请求数</span>
           <h3 class="value">{{ stats.requests }}</h3>
-          <span class="trend up">+12% vs last day</span>
+          <span class="trend" :class="stats.requestsTrend >= 0 ? 'up' : 'down'">
+            {{ stats.requestsTrend >= 0 ? '+' : '' }}{{ stats.requestsTrend }}% 较昨日
+          </span>
         </div>
       </div>
       <div class="stat-card glass">
@@ -18,7 +20,9 @@
         <div class="stat-info">
           <span class="label">Tokens 消耗</span>
           <h3 class="value">{{ stats.tokens.toLocaleString() }}</h3>
-          <span class="trend up">+5.2% vs last day</span>
+          <span class="trend" :class="stats.tokensTrend >= 0 ? 'up' : 'down'">
+            {{ stats.tokensTrend >= 0 ? '+' : '' }}{{ stats.tokensTrend }}% 较昨日
+          </span>
         </div>
       </div>
       <div class="stat-card glass">
@@ -28,7 +32,7 @@
         <div class="stat-info">
           <span class="label">活跃用户</span>
           <h3 class="value">{{ stats.users }}</h3>
-          <span class="trend">Stable</span>
+          <span class="trend">稳定</span>
         </div>
       </div>
       <div class="stat-card glass">
@@ -38,7 +42,10 @@
         <div class="stat-info">
           <span class="label">平均耗时</span>
           <h3 class="value">{{ stats.latency }}ms</h3>
-          <span class="trend down">-15ms improvement</span>
+          <span class="trend" :class="stats.latencyTrend <= 0 ? 'up' : 'down'">
+            {{ stats.latencyTrend > 0 ? '+' : '' }}{{ stats.latencyTrend }}ms 
+            {{ stats.latencyTrend <= 0 ? '提升' : '劣化' }}
+          </span>
         </div>
       </div>
     </div>
@@ -46,24 +53,21 @@
     <div class="charts-section">
       <div class="chart-container glass">
         <div class="chart-header">
-          <h3>Token 消耗趋势</h3>
-          <div class="chart-actions">
-            <button class="btn-item active">7 Days</button>
-            <button class="btn-item">30 Days</button>
-          </div>
+          <h3>Token 消耗趋势 (近 7 日)</h3>
         </div>
-        <div class="chart-placeholder">
-          <BarChart :size="48" class="placeholder-icon" />
-          <p>Chart data being integrated with Chart.js...</p>
+        <div class="chart-box">
+          <Bar v-if="tokenChartData" :data="tokenChartData" :options="chartOptions" />
+          <div v-else class="chart-placeholder">加载中...</div>
         </div>
       </div>
       <div class="model-dist glass">
         <h3>模型调用占比</h3>
-        <div class="chart-placeholder circle">
-          <PieChart :size="48" class="placeholder-icon" />
+        <div class="chart-box doughnut">
+          <Doughnut v-if="modelChartData" :data="modelChartData" :options="doughnutOptions" />
+          <div v-else class="chart-placeholder circle">加载中...</div>
         </div>
         <div class="model-list">
-          <div v-for="m in models" :key="m.name" class="model-item">
+          <div v-for="(m, i) in models" :key="m.name" class="model-item">
             <span class="dot" :style="{ background: m.color }"></span>
             <span class="name">{{ m.name }}</span>
             <span class="percent">{{ m.percent }}%</span>
@@ -80,20 +84,53 @@ import {
   Coins, 
   Users, 
   Zap, 
-  BarChart, 
-  PieChart 
 } from 'lucide-vue-next'
+import { 
+  Chart as ChartJS, 
+  Title, 
+  Tooltip, 
+  Legend, 
+  BarElement, 
+  CategoryScale, 
+  LinearScale, 
+  ArcElement 
+} from 'chart.js'
+import { Bar, Doughnut } from 'vue-chartjs'
+
+ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale, ArcElement)
 
 const { getStats, getModels, getUsers } = useApi()
 
 const stats = reactive({
   requests: 0,
+  requestsTrend: 0,
   tokens: 0,
+  tokensTrend: 0,
   users: 0,
-  latency: 0
+  latency: 0,
+  latencyTrend: 0
 })
 
 const models = ref([])
+const tokenChartData = ref(null)
+const modelChartData = ref(null)
+
+const chartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+  scales: {
+    y: { grid: { color: 'rgba(255, 255, 255, 0.05)' }, ticks: { color: 'rgba(255, 255, 255, 0.5)' } },
+    x: { grid: { display: false }, ticks: { color: 'rgba(255, 255, 255, 0.5)' } }
+  }
+}
+
+const doughnutOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+  cutout: '70%'
+}
 
 const loadDashboardData = async () => {
   try {
@@ -103,30 +140,100 @@ const loadDashboardData = async () => {
       getUsers()
     ])
 
-    // Aggregate stats from recent logs
-    stats.requests = statsData.length
-    stats.tokens = statsData.reduce((acc, curr) => acc + curr.request_tokens + curr.response_tokens, 0)
-    stats.users = usersData.length
+    const now = new Date()
+    const oneDayMs = 24 * 60 * 60 * 1000
     
-    const totalLatency = statsData.reduce((acc, curr) => acc + curr.duration_ms, 0)
-    stats.latency = statsData.length > 0 ? Math.round(totalLatency / statsData.length) : 0
+    // 1. Calculate Trends (24h Window)
+    const currentWindowLogs = statsData.filter(s => (now.getTime() - new Date(s.timestamp).getTime()) <= oneDayMs)
+    const previousWindowLogs = statsData.filter(s => {
+      const diff = now.getTime() - new Date(s.timestamp).getTime()
+      return diff > oneDayMs && diff <= (2 * oneDayMs)
+    })
 
-    // Prepare model distribution
+    stats.requests = currentWindowLogs.length
+    stats.tokens = currentWindowLogs.reduce((acc, curr) => acc + curr.request_tokens + curr.response_tokens, 0)
+    stats.users = usersData.length
+    const totalLatency = currentWindowLogs.reduce((acc, curr) => acc + curr.duration_ms, 0)
+    stats.latency = currentWindowLogs.length > 0 ? Math.round(totalLatency / currentWindowLogs.length) : 0
+
+    const prevRequests = previousWindowLogs.length
+    const prevTokens = previousWindowLogs.reduce((acc, curr) => acc + curr.request_tokens + curr.response_tokens, 0)
+    const prevTotalLatency = previousWindowLogs.reduce((acc, curr) => acc + curr.duration_ms, 0)
+    const prevLatency = previousWindowLogs.length > 0 ? Math.round(prevTotalLatency / previousWindowLogs.length) : 0
+
+    const calcTrend = (curr, prev) => {
+      if (prev === 0) return curr > 0 ? 100 : 0
+      return Math.round(((curr - prev) / prev) * 100)
+    }
+
+    stats.requestsTrend = calcTrend(stats.requests, prevRequests)
+    stats.tokensTrend = calcTrend(stats.tokens, prevTokens)
+    stats.latencyTrend = stats.latency - prevLatency
+
+    // 2. Token Trend Chart (Last 7 Days)
+    const days = []
+    const dailyTokens = []
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * oneDayMs)
+      const dateStr = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      days.push(dateStr)
+      
+      const dayStart = new Date(d.setHours(0, 0, 0, 0)).getTime()
+      const dayEnd = dayStart + oneDayMs
+      const dayTokens = statsData
+        .filter(s => {
+          const t = new Date(s.timestamp).getTime()
+          return t >= dayStart && t < dayEnd
+        })
+        .reduce((acc, curr) => acc + curr.request_tokens + curr.response_tokens, 0)
+      dailyTokens.push(dayTokens)
+    }
+
+    tokenChartData.value = {
+      labels: days,
+      datasets: [{
+        label: 'Tokens',
+        data: dailyTokens,
+        backgroundColor: '#6366f1',
+        borderRadius: 4
+      }]
+    }
+
+    // 3. Model Distribution Chart
     const modelUsage = {}
     statsData.forEach(s => {
       modelUsage[s.model_id] = (modelUsage[s.model_id] || 0) + 1
     })
 
-    const colors = ['#0ea5e9', '#6366f1', '#10b981', '#f59e0b', '#ef4444']
-    models.value = modelsData.slice(0, 5).map((m, i) => {
+    const chartColors = ['#0ea5e9', '#6366f1', '#10b981', '#f59e0b', '#ef4444']
+    const modelLabels = []
+    const modelCounts = []
+    const currentModels = []
+
+    modelsData.slice(0, 5).forEach((m, i) => {
       const count = modelUsage[m.model_id] || 0
+      modelLabels.push(m.model_id)
+      modelCounts.push(count)
+      
       const percent = statsData.length > 0 ? Math.round((count / statsData.length) * 100) : 0
-      return {
+      currentModels.push({
         name: m.model_id,
         percent: percent,
-        color: colors[i % colors.length]
-      }
+        color: chartColors[i % chartColors.length]
+      })
     })
+
+    models.value = currentModels
+    modelChartData.value = {
+      labels: modelLabels,
+      datasets: [{
+        data: modelCounts,
+        backgroundColor: chartColors,
+        borderWidth: 0,
+        hoverOffset: 10
+      }]
+    }
+
   } catch (e) {
     console.error('Failed to load dashboard data:', e)
   }

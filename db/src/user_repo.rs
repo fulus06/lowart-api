@@ -13,12 +13,16 @@ impl<'a> UserRepo<'a> {
         Self { db }
     }
 
-    /// 根据 API Key 获取用户
+    /// 根据 API Key 获取用户 (多 Key 支持)
     pub async fn find_by_api_key(&self, api_key: &str) -> Result<Option<User>> {
-        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE api_key = ?")
-            .bind(api_key)
-            .fetch_optional(&self.db.pool)
-            .await?;
+        let user = sqlx::query_as::<_, User>(
+            "SELECT u.* FROM users u 
+             JOIN api_keys ak ON u.id = ak.user_id 
+             WHERE ak.api_key = ? AND ak.status = 'Active' AND u.status = 'Active'"
+        )
+        .bind(api_key)
+        .fetch_optional(&self.db.pool)
+        .await?;
         Ok(user)
     }
 

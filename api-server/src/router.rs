@@ -62,6 +62,10 @@ pub fn create_router(state: AppState, metrics_handle: PrometheusHandle) -> Route
         .route("/policies", post(admin_handlers::update_tool_policy))
         .route("/mcp/register", post(admin_handlers::register_mcp))
         .route("/mcp/unregister", post(admin_handlers::unregister_mcp))
+        .route("/users/{id}/keys", get(admin_handlers::list_user_keys))
+        .route("/keys", post(admin_handlers::create_user_key))
+        .route("/keys/reset", post(admin_handlers::reset_user_key))
+        .route("/keys/delete", post(admin_handlers::delete_user_key))
         .layer(middleware::from_fn(admin_middleware));
 
 

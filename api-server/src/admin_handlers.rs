@@ -83,6 +83,22 @@ pub struct DeleteModelRequest {
     pub id: String,
 }
 
+#[derive(Deserialize)]
+pub struct CreateKeyRequest {
+    pub user_id: String,
+    pub label: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResetKeyRequest {
+    pub key_id: i64,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteKeyRequest {
+    pub key_id: i64,
+}
+
 
 /// 获取所有用户列表
 pub async fn list_users(State(state): State<AppState>) -> impl IntoResponse {
@@ -347,6 +363,72 @@ pub async fn delete_model(
             state.model_manager.clear_cache().await;
             Json(json!({"status": "success"})).into_response()
         },
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 获取用户的所有 API Key
+pub async fn list_user_keys(
+    State(state): State<AppState>,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let key_repo = db::ApiKeyRepo::new(&db);
+    match key_repo.list_by_user(&user_id).await {
+        Ok(keys) => Json(keys).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 为用户创建新的 API Key
+pub async fn create_user_key(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateKeyRequest>,
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let key_repo = db::ApiKeyRepo::new(&db);
+    match key_repo.create(&payload.user_id, &payload.label).await {
+        Ok(key) => Json(json!({"status": "success", "key": key})).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 重置 API Key
+pub async fn reset_user_key(
+    State(state): State<AppState>,
+    Json(payload): Json<ResetKeyRequest>,
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let key_repo = db::ApiKeyRepo::new(&db);
+
+    // 1. 获取旧 Key 用于清除缓存
+    if let Ok(Some(old_key)) = key_repo.find_by_id(payload.key_id).await {
+        state.user_cache.invalidate(&old_key.api_key).await;
+    }
+
+    // 2. 执行重置
+    match key_repo.reset(payload.key_id).await {
+        Ok(key) => Json(json!({"status": "success", "key": key})).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 删除 API Key
+pub async fn delete_user_key(
+    State(state): State<AppState>,
+    Json(payload): Json<DeleteKeyRequest>,
+) -> impl IntoResponse {
+    let db = state.model_manager.db();
+    let key_repo = db::ApiKeyRepo::new(&db);
+
+    // 1. 获取旧 Key 用于清除缓存
+    if let Ok(Some(old_key)) = key_repo.find_by_id(payload.key_id).await {
+        state.user_cache.invalidate(&old_key.api_key).await;
+    }
+
+    // 2. 执行删除
+    match key_repo.delete(payload.key_id).await {
+        Ok(_) => Json(json!({"status": "success"})).into_response(),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

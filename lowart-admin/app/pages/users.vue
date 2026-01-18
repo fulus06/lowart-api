@@ -67,6 +67,9 @@
             <td class="hide-mobile">{{ new Date(user.created_at).toLocaleDateString() }}</td>
             <td>
               <div class="actions">
+                <button class="icon-btn" title="API 密钥" @click="manageKeys(user)">
+                  <Key :size="16" />
+                </button>
                 <button class="icon-btn" title="修改信息" @click="openEditModal(user)">
                   <UserCog :size="16" />
                 </button>
@@ -86,6 +89,58 @@
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- API Keys Modal -->
+    <div v-if="showKeysModal" class="modal-overlay" @click.self="showKeysModal = false">
+      <div class="modal glass keys-modal">
+        <div class="modal-header">
+          <h3>密钥管理: {{ keyTargetUser?.username }}</h3>
+          <button class="btn primary sm" @click="createKeyForUser">
+            <Plus :size="14" /> 新增密钥
+          </button>
+        </div>
+        
+        <div class="keys-list">
+          <div v-if="userKeys.length === 0" class="empty-keys">无可用密钥</div>
+          <div v-for="key in userKeys" :key="key.id" class="key-item glass">
+            <div class="key-info">
+              <div class="key-top">
+                <span class="key-label">{{ key.label }}</span>
+                <span class="key-status" :class="key.status.toLowerCase()">{{ key.status }}</span>
+              </div>
+              <div class="key-value-row">
+                <code>{{ key.api_key }}</code>
+                <button class="icon-btn sm" @click="copyToClipboard(key.api_key, 'key-' + key.id)">
+                  <Check v-if="copiedId === 'key-' + key.id" :size="14" class="text-success" />
+                  <Copy v-else :size="14" />
+                </button>
+              </div>
+              <div class="key-meta">
+                创建于: {{ new Date(key.created_at).toLocaleString() }}
+                <span v-if="key.last_used_at"> | 最后使用: {{ new Date(key.last_used_at).toLocaleString() }}</span>
+              </div>
+            </div>
+            <div class="key-item-actions">
+              <button class="btn secondary sm" title="重置密钥" @click="resetKeyConfirm(key)">
+                <RefreshCw :size="14" />
+              </button>
+              <button 
+                class="btn secondary sm delete" 
+                title="删除密钥" 
+                :disabled="userKeys.length <= 1"
+                @click="deleteKeyConfirm(key)"
+              >
+                <Trash2 :size="14" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn secondary" @click="showKeysModal = false">关闭</button>
+        </div>
+      </div>
     </div>
 
     <!-- User Modal (Add / Edit Info) -->
@@ -158,7 +213,10 @@ import {
   UserCog,
   Trash2,
   Copy,
-  Check
+  Check,
+  Key,
+  Plus,
+  RefreshCw
 } from 'lucide-vue-next'
 
 const searchQuery = ref('')
@@ -185,7 +243,22 @@ const quotaForm = reactive({
   token_quota: 0
 })
 
-const { getUsers, updateQuota, createUser, updateUser, deleteUser } = useApi()
+// Keys Modal State
+const showKeysModal = ref(false)
+const keyTargetUser = ref(null)
+const userKeys = ref([])
+
+const { 
+  getUsers, 
+  updateQuota, 
+  createUser, 
+  updateUser, 
+  deleteUser,
+  getUserKeys,
+  createKey,
+  resetKey,
+  deleteKey
+} = useApi()
 const authStore = useAuthStore()
 const users = ref([])
 const copiedId = ref(null)
@@ -198,6 +271,51 @@ const loadUsers = async () => {
     console.error('Failed to load users:', e)
   } finally {
     isLoading.value = false
+  }
+}
+
+const manageKeys = async (user) => {
+  keyTargetUser.value = user
+  showKeysModal.value = true
+  try {
+    userKeys.value = await getUserKeys(user.id)
+  } catch (e) {
+    alert('获取密钥失败: ' + (e.data || e.message))
+  }
+}
+
+const createKeyForUser = async () => {
+  if (!keyTargetUser.value) return
+  const label = prompt('请输入新密钥标签 (例如: Test, Prod-API)')
+  if (!label) return
+  
+  try {
+    await createKey({ user_id: keyTargetUser.value.id, label })
+    userKeys.value = await getUserKeys(keyTargetUser.value.id)
+  } catch (e) {
+    alert('创建密钥失败: ' + (e.data || e.message))
+  }
+}
+
+const resetKeyConfirm = async (key) => {
+  if (confirm(`确定要重置密钥 "${key.label}" 吗？旧的密钥将立即失效。`)) {
+    try {
+      await resetKey(key.id)
+      userKeys.value = await getUserKeys(keyTargetUser.value.id)
+    } catch (e) {
+      alert('重置失败: ' + (e.data || e.message))
+    }
+  }
+}
+
+const deleteKeyConfirm = async (key) => {
+  if (confirm(`确定要删除密钥 "${key.label}" 吗？`)) {
+    try {
+      await deleteKey(key.id)
+      userKeys.value = await getUserKeys(keyTargetUser.value.id)
+    } catch (e) {
+      alert('删除失败: ' + (e.data || e.message))
+    }
   }
 }
 
@@ -586,9 +704,104 @@ const saveQuota = async () => {
   margin-top: 2rem;
 }
 
-@media (max-width: 768px) {
-  .hide-mobile {
-    display: none;
-  }
+/* Keys Modal Specific Styles */
+.keys-modal {
+  width: 560px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.keys-modal .modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.keys-modal .modal-header h3 {
+  margin-bottom: 0;
+}
+
+.keys-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.key-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.key-info {
+  flex: 1;
+}
+
+.key-top {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.key-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.key-status {
+  font-size: 0.625rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.key-status.active { background: rgba(16, 185, 129, 0.1); color: var(--success); }
+
+.key-value-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.key-value-row code {
+  background: var(--bg-primary);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.8125rem;
+  color: var(--accent-primary);
+}
+
+.key-meta {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.key-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-left: 1rem;
+}
+
+.empty-keys {
+  text-align: center;
+  padding: 3rem;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.btn.sm.delete:hover {
+  background: var(--error);
+  color: white;
 }
 </style>

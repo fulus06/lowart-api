@@ -48,6 +48,21 @@ export const useApi = () => {
             body: payload
         }),
 
+        // API Key APIs
+        getUserKeys: (user_id: string) => fetchWithAuth(`/admin/users/${user_id}/keys`),
+        createKey: (payload: { user_id: string, label: string }) => fetchWithAuth('/admin/keys', {
+            method: 'POST',
+            body: payload
+        }),
+        resetKey: (key_id: number) => fetchWithAuth('/admin/keys/reset', {
+            method: 'POST',
+            body: { key_id }
+        }),
+        deleteKey: (key_id: number) => fetchWithAuth('/admin/keys/delete', {
+            method: 'POST',
+            body: { key_id }
+        }),
+
         // Model APIs
         getModels: () => fetchWithAuth('/admin/models'),
         createModel: (payload: { title: string, model_id: string, api_key: string, base_url: string, vendor_type: string, cost_per_1k_tokens: number, is_active: boolean }) => fetchWithAuth('/admin/models', {

@@ -7,12 +7,23 @@ use chrono::{DateTime, Utc};
 pub struct User {
     pub id: String,
     pub username: String,
-    pub api_key: String,
+    pub api_key: String, // TODO: Deprecate after migration
     pub status: String,
     pub rpm_limit: i64,
     pub token_quota: i64,
     pub token_used: i64,
     pub is_admin: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ApiKey {
+    pub id: i64,
+    pub user_id: String,
+    pub api_key: String,
+    pub label: String,
+    pub status: String,
+    pub last_used_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
